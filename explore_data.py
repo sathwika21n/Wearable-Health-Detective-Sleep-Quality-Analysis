@@ -1,34 +1,29 @@
 import pandas as pd
 
+# Load dataset
 sleep = pd.read_csv("data/ifh_affect/par_1/oura/sleep.csv")
-hypnogram = pd.read_csv("data/ifh_affect/par_1/oura/sleep_hypnogram.csv")
-heart_rate = pd.read_csv("data/ifh_affect/par_1/oura/heart_rate.csv")
 
-# Basic dataset structure
+# Check dataset structure
 print("Number of nights:", len(sleep))
 print("Date range:", sleep["date"].min(), "to", sleep["date"].max())
 
-print("\nSleep columns:")
-print(sleep.columns.tolist())
+print("\nColumns we will use:")
+columns = [
+    "date",
+    "total",
+    "deep",
+    "rem",
+    "awake",
+    "efficiency",
+    "hr_average",
+    "rmssd",
+    "temperature_delta"
+]
 
-print("\nHypnogram sample:")
-print(hypnogram.head())
+print(columns)
 
-print("\nHeart rate sample:")
-print(heart_rate.head())
+print("\nSample data:")
+print(sleep[columns].head())
 
-# Merge sleep stage + HR/HRV by timestamp
-merged = pd.merge(hypnogram, heart_rate, on="timestamp", how="inner")
-
-print("\nMerged sample:")
-print(
-    merged[
-        ["timestamp", "hypnogram_class", "heart_rate", "heart_rmssd"]
-    ].head()
-)
-
-print("\nSleep stages:")
-print(merged["hypnogram_class"].unique())
-
-print("\nTemperature sample:")
-print(sleep[["date", "temperature_delta"]].head())
+print("\nMissing values:")
+print(sleep[columns].isnull().sum())
