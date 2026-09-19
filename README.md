@@ -31,7 +31,7 @@ Provide simple, user-friendly explanations of important sleep changes.
 # Pipeline
 
 1. Data Input
-   Load DREAMT sleep-stage, heart-rate, skin-temperature, and timestamp data.
+   Load sleep-stage, heart-rate, skin-temperature, and timestamp data.
 2. Data Preprocessing
    Clean and organize the dataset.
    Handle missing values.
@@ -64,104 +64,30 @@ Provide simple, user-friendly explanations of important sleep changes.
 
 # Project Flow
 
-Longitudinal Data
-(320 nights for one participant)
+```mermaid
+graph TD
+    A[Longitudinal Data<br/>320 nights] --> B[Data Loading & Preprocessing]
+    
+    subgraph Files
+        B --> B1[sleep_hypnogram.csv<br/>5-min Sleep Stages]
+        B --> B2[heart_rate.csv<br/>5-min HR / HRV]
+        B --> B3[sleep.csv<br/>Temp Delta & Oura validation]
+    end
 
-        ↓
+    Files --> C[Nightly Feature Extraction]
+    
+    C -->|Sleep| C1[Total, Deep, REM, Light, Awake, Stage Changes]
+    C -->|Heart| C2[Avg HR, Min HR, HRV, HR by Stage]
+    C -->|Temp| C3[Nightly Temp Delta]
 
-Data Loading & Preprocessing
+    C1 & C2 & C3 --> D[Create Nightly Dataset]
+    D --> E[Rolling Personal Baseline<br/>Previous 30 Nights]
+    E --> F[Selected Night]
+    F --> G[Compare Selected Night vs Baseline]
+    G --> H[Change / Anomaly Detection]
 
-sleep_hypnogram.csv
-→ 5-min Sleep Stages
+    H --> I[Change Detection<br/>Unusual deviation]
+    H --> J[Pattern Analysis<br/>Cross-night correlations]
+    H --> K[Normal Night<br/>No meaningful deviation]
 
-heart_rate.csv
-→ 5-min HR / HRV
-
-sleep.csv
-→ Temperature Delta
-→ Oura summary for validation
-
-        ↓
-
-Nightly Feature Extraction
-
-Sleep:
-
-- Total Sleep Time
-- Deep Sleep
-- REM Sleep
-- Light Sleep
-- Awake Time
-- Sleep Stage Changes
-
-Heart:
-
-- Average HR
-- Minimum HR
-- HRV
-- HR by Sleep Stage
-
-Temperature:
-
-- Nightly Temperature Delta
-
-        ↓
-
-Create Nightly Dataset
-
-## Date | Sleep | Deep | REM | Awake | Avg HR | HRV | Temp
-
-Day 1
-Day 2
-Day 3
-...
-Day 320
-
-        ↓
-
-Rolling Personal Baseline
-(Previous 30 Nights)
-
-- Mean / Median
-- Standard Deviation
-- Normal Range
-
-        ↓
-
-Selected Night
-
-        ↓
-
-Compare Selected Night
-with Previous 30-Night Baseline
-
-        ↓
-
-Change / Anomaly Detection
-
-Examples:
-
-Sleep Duration ↓
-Deep Sleep ↓
-Heart Rate ↑
-HRV ↓
-Temperature Delta ↑
-
-        ↓
-
-┌────────────────────┬─────────────────────┐
-│ │ │
-Change Detection Pattern Analysis Normal Night
-│ │ │
-↓ ↓ ↓
-Unusual deviation Relationships No meaningful
-from baseline across many nights deviation
-
-                     Examples:
-                     Sleep ↓ ↔ HR ↑
-                     Deep Sleep ↓ ↔ HRV ↓
-                     Sleep ↓ ↔ Temp change
-
-        ↓
-
-Dashboard + LLM Insight
+    I & J & K --> L[Dashboard + LLM Insight]
