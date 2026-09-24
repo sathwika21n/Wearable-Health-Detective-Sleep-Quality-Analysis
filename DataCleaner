@@ -1,0 +1,75 @@
+import pandas as pd                           # load data table library
+import numpy as np                            # needed for missing values
+folder = "data/ifh_affect/par_1/oura/"        # folder with Oura files
+
+# LOAD THE FILES 
+sleep = pd.read_csv(folder + "sleep.csv")          # one row per night
+hyp = pd.read_csv(folder + "sleep_hypnogram.csv")  # 5-minute sleep stages
+hr = pd.read_csv(folder + "heart_rate.csv")        # 5-minute heart rate readings
+
+# HANDLE MISSING VALUES
+sleep["date"] = pd.to_datetime(sleep["date"])               # convert text to date
+sleep = sleep.sort_values("date").reset_index(drop=True)    # put nights in order
+
+hr = hr.drop_duplicates("timestamp")                        # remove repeated heart rows
+hyp = hyp.drop_duplicates("timestamp")                      # remove repeated stage rows
+
+zeros = (hr["heart_rate"] == 0).sum()                         # count zero heart readings
+hr["heart_rate"] = hr["heart_rate"].replace(0, np.nan)        # zero means no reading
+hr["heart_rmssd"] = hr["heart_rmssd"].replace(0, np.nan)      # zero HRV means missing
+bad = (hr["heart_rate"] < 30) | (hr["heart_rate"] > 200)      # find impossible heart rates
+hr.loc[bad, "heart_rate"] = np.nan                            # mark impossible values missing
+print("Heart zeros set missing:", zeros)                      # report zero count
+print("Impossible heart rates removed:", bad.sum())           # report outlier count
+
+missing_temp = sleep["temperature_delta"].isna()              # find nights missing temperature
+sleep["temp_was_filled"] = missing_temp                       # remember which were filled
+sleep["temperature_delta"] = sleep["temperature_delta"].interpolate()                              # fill from neighboring nights
+print("Temperature filled on:", sleep.loc[missing_temp, "date"].dt.strftime("%Y-%m-%d").tolist())  # report filled nights
+
+all_days = pd.date_range(sleep["date"].min(), sleep["date"].max())    # every day in range
+gaps = all_days.difference(sleep["date"])                             # days with no data
+print("Nights with no data:", [str(d.date()) for d in gaps])          # report missing nights
+
+# ALIGNMENT
+hyp["time_utc"] = pd.to_datetime(hyp["timestamp"], unit="ms")          # milliseconds to UTC time
+hr["time_utc"] = pd.to_datetime(hr["timestamp"], unit="ms")            # milliseconds to UTC time
+
+bed_utc = pd.to_datetime(sleep["bedtime_start_timestamp"], unit="ms")               # bedtime in UTC time
+bed_delta = pd.to_timedelta(sleep["bedtime_start_midnight_delta"], unit="s")        # bedtime after local midnight
+bed_local = sleep["date"] + bed_delta                                               # bedtime in local time
+offset = (bed_local - bed_utc).dt.total_seconds() / 3600                            # hours between local, UTC
+sleep["utc_offset_hours"] = offset.round()                                          # usually -7 or -8
+print("Time zone offsets:", sleep["utc_offset_hours"].value_counts().to_dict())     # report offsets found
+
+stages = hyp[["timestamp", "hypnogram_class"]]                           # keep timestamp and stage
+epochs = hr.merge(stages, on="timestamp", how="left")                    # match heart to stage
+no_stage = epochs["hypnogram_class"].isna().sum()                        # count rows without stage
+epochs["hypnogram_class"] = epochs["hypnogram_class"].fillna("unknown")  # label missing stages unknown
+print("Heart rows without stage:", no_stage)                             # report unmatched rows
+
+epochs["night"] = pd.NaT  # start with no night
+epochs["time_local"] = pd.NaT                                            # start with no local time
+for _, night in sleep.iterrows():                                        # go through each night
+    after_start = epochs["timestamp"] >= night["bedtime_start_timestamp"]   # rows after bedtime start
+    before_end = epochs["timestamp"] <= night["bedtime_end_timestamp"]      # rows before wake time
+    inside = after_start & before_end  # rows during this night
+    shift = pd.Timedelta(hours=night["utc_offset_hours"])                       # this night's time shift
+    epochs.loc[inside, "night"] = night["date"]                                 # tag rows with night
+    epochs.loc[inside, "time_local"] = epochs.loc[inside, "time_utc"] + shift   # convert to local time
+
+print("Rows outside any night:", epochs["night"].isna().sum())                  # report unassigned rows
+epochs = epochs.dropna(subset=["night"])                                        # drop rows without night
+
+# CHECK ALIGNMENT
+asleep = epochs[epochs["hypnogram_class"].isin(["deep", "light", "REM"])]      # keep only sleeping rows
+our_total = asleep.groupby("night").size() * 5                                 # sleep minutes per night
+oura_total = sleep.set_index("date")["total"] / 60                             # Oura's minutes per night
+diff = (our_total - oura_total).abs()                                          # difference for each night
+print("Typical difference vs Oura (min):", round(diff.median()))               # should be very small
+
+# SAVE FILES 
+cols = ["night", "time_local", "time_utc", "hypnogram_class", "heart_rate", "heart_rmssd"]  # columns to keep
+epochs[cols].to_csv("aligned_epochs.csv", index=False)                                      # save 5-minute table
+sleep.to_csv("sleep_clean.csv", index=False)                                                # save cleaned nightly table
+print("Saved aligned_epochs.csv and sleep_clean.csv")                                       # confirm files were saved
