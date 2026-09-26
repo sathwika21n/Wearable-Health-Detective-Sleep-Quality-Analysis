@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 
 
@@ -5,78 +7,86 @@ def to_datetime_ms(series):
     return pd.to_datetime(series, unit="ms", utc=True)
 
 
-# Load nightly sleep summary
-sleep = pd.read_csv("data/ifh_affect/par_1/oura/sleep.csv")
-sleep["date"] = pd.to_datetime(sleep["date"])
+base_dir = Path("data/ifh_affect")
+participant_dirs = sorted(base_dir.glob("par_*"))
 
-# Convert the nightly sleep window timestamps into a comparable datetime range
-sleep["bedtime_start_dt"] = to_datetime_ms(sleep["bedtime_start_timestamp"])
-sleep["bedtime_end_dt"] = to_datetime_ms(sleep["bedtime_end_timestamp"])
+all_sleep = []
+all_aligned = []
 
-# Load time-series signals
-heart_rate = pd.read_csv("data/ifh_affect/par_1/oura/heart_rate.csv")
-heart_rate["timestamp_dt"] = to_datetime_ms(heart_rate["timestamp"])
-heart_rate = heart_rate.sort_values("timestamp_dt").drop_duplicates(subset="timestamp_dt")
+for participant_dir in participant_dirs:
+    sleep_path = participant_dir / "oura" / "sleep.csv"
+    heart_path = participant_dir / "oura" / "heart_rate.csv"
+    hypnogram_path = participant_dir / "oura" / "sleep_hypnogram.csv"
 
-sleep_hypnogram = pd.read_csv("data/ifh_affect/par_1/oura/sleep_hypnogram.csv")
-sleep_hypnogram["timestamp_dt"] = to_datetime_ms(sleep_hypnogram["timestamp"])
-sleep_hypnogram = sleep_hypnogram.sort_values("timestamp_dt").drop_duplicates(subset="timestamp_dt")
+    if not sleep_path.exists() or not heart_path.exists() or not hypnogram_path.exists():
+        continue
 
-# Align each signal to the sleep window for that night
-aligned_frames = []
-for _, row in sleep.iterrows():
-    start = row["bedtime_start_dt"]
-    end = row["bedtime_end_dt"]
-    night_date = row["date"]
+    sleep = pd.read_csv(sleep_path)
+    sleep["date"] = pd.to_datetime(sleep["date"])
+    sleep["bedtime_start_dt"] = to_datetime_ms(sleep["bedtime_start_timestamp"])
+    sleep["bedtime_end_dt"] = to_datetime_ms(sleep["bedtime_end_timestamp"])
+    sleep["participant_id"] = participant_dir.name
+    all_sleep.append(sleep)
 
-    hr_window = heart_rate[(heart_rate["timestamp_dt"] >= start) & (heart_rate["timestamp_dt"] <= end)].copy()
-    hr_window["date"] = night_date
-    hr_window["sleep_start"] = start
-    hr_window["sleep_end"] = end
+    heart_rate = pd.read_csv(heart_path)
+    heart_rate["timestamp_dt"] = to_datetime_ms(heart_rate["timestamp"])
+    heart_rate = heart_rate.sort_values("timestamp_dt").drop_duplicates(subset="timestamp_dt")
+    heart_rate["participant_id"] = participant_dir.name
 
-    hyp_window = sleep_hypnogram[(sleep_hypnogram["timestamp_dt"] >= start) & (sleep_hypnogram["timestamp_dt"] <= end)].copy()
-    hyp_window["date"] = night_date
-    hyp_window["sleep_start"] = start
-    hyp_window["sleep_end"] = end
+    sleep_hypnogram = pd.read_csv(hypnogram_path)
+    sleep_hypnogram["timestamp_dt"] = to_datetime_ms(sleep_hypnogram["timestamp"])
+    sleep_hypnogram = sleep_hypnogram.sort_values("timestamp_dt").drop_duplicates(subset="timestamp_dt")
+    sleep_hypnogram["participant_id"] = participant_dir.name
 
-    merged = hr_window.merge(
-        hyp_window[["timestamp_dt", "hypnogram_level", "hypnogram_class", "date", "sleep_start", "sleep_end"]],
-        on=["timestamp_dt", "date", "sleep_start", "sleep_end"],
-        how="outer"
-    ).sort_values("timestamp_dt")
+    for _, row in sleep.iterrows():
+        start = row["bedtime_start_dt"]
+        end = row["bedtime_end_dt"]
+        night_date = row["date"]
 
-    aligned_frames.append(merged)
+        hr_window = heart_rate[
+            (heart_rate["timestamp_dt"] >= start) & (heart_rate["timestamp_dt"] <= end)
+        ].copy()
+        hr_window["date"] = night_date
+        hr_window["sleep_start"] = start
+        hr_window["sleep_end"] = end
 
-aligned = pd.concat(aligned_frames, ignore_index=True) if aligned_frames else pd.DataFrame()
+        hyp_window = sleep_hypnogram[
+            (sleep_hypnogram["timestamp_dt"] >= start) & (sleep_hypnogram["timestamp_dt"] <= end)
+        ].copy()
+        hyp_window["date"] = night_date
+        hyp_window["sleep_start"] = start
+        hyp_window["sleep_end"] = end
 
-# Check dataset structure
-print("Number of nights:", len(sleep))
-print("Date range:", sleep["date"].min(), "to", sleep["date"].max())
-print("Aligned signal rows:", len(aligned))
+        merged = hr_window.merge(
+            hyp_window[["timestamp_dt", "hypnogram_level", "hypnogram_class", "date", "sleep_start", "sleep_end"]],
+            on=["timestamp_dt", "date", "sleep_start", "sleep_end"],
+            how="outer",
+        ).sort_values("timestamp_dt")
 
-print("\nAligned sample:")
-print(aligned[["date", "timestamp_dt", "heart_rate", "heart_rmssd", "hypnogram_level", "hypnogram_class"]].head())
+        if not merged.empty:
+            merged["participant_id"] = participant_dir.name
+            all_aligned.append(merged)
 
-print("\nMissing values in aligned data:")
-print(aligned[["heart_rate", "heart_rmssd", "hypnogram_level", "hypnogram_class"]].isnull().sum())
+all_sleep_df = pd.concat(all_sleep, ignore_index=True) if all_sleep else pd.DataFrame()
+aligned_df = pd.concat(all_aligned, ignore_index=True) if all_aligned else pd.DataFrame()
 
-print("\nColumns we will use:")
-columns = [
-    "date",
-    "total",
-    "deep",
-    "rem",
-    "awake",
-    "efficiency",
-    "hr_average",
-    "rmssd",
-    "temperature_delta"
-]
+print("Participants found:", len(participant_dirs))
+print("Total sleep rows:", len(all_sleep_df))
+print("Aligned signal rows:", len(aligned_df))
+print("Date range:", all_sleep_df["date"].min(), "to", all_sleep_df["date"].max())
 
-print(columns)
+print("\nSample aligned data:")
+print(
+    aligned_df[
+        ["participant_id", "date", "timestamp_dt", "heart_rate", "heart_rmssd", "hypnogram_level", "hypnogram_class"]
+    ].head()
+)
 
-print("\nSample nightly summary data:")
-print(sleep[columns].head())
+print("\nMissing values:")
+print(aligned_df[["heart_rate", "heart_rmssd", "hypnogram_level", "hypnogram_class"]].isnull().sum())
 
-print("\nMissing values in summary data:")
-print(sleep[columns].isnull().sum())
+print("\nSummary columns available:")
+print(all_sleep_df.columns[:10].tolist())
+print("...")
+print(all_sleep_df[["date", "total", "deep", "rem", "awake", "efficiency", "hr_average", "rmssd", "temperature_delta"]].head())
+
