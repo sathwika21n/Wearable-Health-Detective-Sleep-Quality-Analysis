@@ -7,7 +7,9 @@ def to_datetime_ms(series):
     return pd.to_datetime(series, unit="ms", utc=True)
 
 
-base_dir = Path("data/ifh_affect")
+project_dir = Path(__file__).resolve().parent
+base_dir = project_dir / "data" / "ifh_affect"
+aligned_output_dir = project_dir / "aligned_data"
 participant_dirs = sorted(base_dir.glob("par_*"))
 
 all_sleep = []
@@ -38,6 +40,8 @@ for participant_dir in participant_dirs:
     sleep_hypnogram = sleep_hypnogram.sort_values("timestamp_dt").drop_duplicates(subset="timestamp_dt")
     sleep_hypnogram["participant_id"] = participant_dir.name
 
+    participant_aligned = []
+
     for _, row in sleep.iterrows():
         start = row["bedtime_start_dt"]
         end = row["bedtime_end_dt"]
@@ -66,6 +70,15 @@ for participant_dir in participant_dirs:
         if not merged.empty:
             merged["participant_id"] = participant_dir.name
             all_aligned.append(merged)
+            participant_aligned.append(merged)
+
+    if participant_aligned:
+        aligned_output_dir.mkdir(parents=True, exist_ok=True)
+        participant_df = pd.concat(participant_aligned, ignore_index=True)
+        participant_df.to_csv(
+            aligned_output_dir / f"{participant_dir.name}_aligned.csv",
+            index=False,
+        )
 
 all_sleep_df = pd.concat(all_sleep, ignore_index=True) if all_sleep else pd.DataFrame()
 aligned_df = pd.concat(all_aligned, ignore_index=True) if all_aligned else pd.DataFrame()
@@ -73,20 +86,30 @@ aligned_df = pd.concat(all_aligned, ignore_index=True) if all_aligned else pd.Da
 print("Participants found:", len(participant_dirs))
 print("Total sleep rows:", len(all_sleep_df))
 print("Aligned signal rows:", len(aligned_df))
-print("Date range:", all_sleep_df["date"].min(), "to", all_sleep_df["date"].max())
+if not all_sleep_df.empty:
+    print("Date range:", all_sleep_df["date"].min(), "to", all_sleep_df["date"].max())
+else:
+    print("Date range: unavailable (no participant sleep data found)")
+
+print("Aligned participant files:", aligned_output_dir)
 
 print("\nSample aligned data:")
-print(
-    aligned_df[
-        ["participant_id", "date", "timestamp_dt", "heart_rate", "heart_rmssd", "hypnogram_level", "hypnogram_class"]
-    ].head()
-)
+sample_columns = [
+    "participant_id", "date", "timestamp_dt", "heart_rate", "heart_rmssd",
+    "hypnogram_level", "hypnogram_class",
+]
+if not aligned_df.empty:
+    print(aligned_df[sample_columns].head())
+else:
+    print("No aligned signal rows found.")
 
 print("\nMissing values:")
-print(aligned_df[["heart_rate", "heart_rmssd", "hypnogram_level", "hypnogram_class"]].isnull().sum())
+if not aligned_df.empty:
+    print(aligned_df[["heart_rate", "heart_rmssd", "hypnogram_level", "hypnogram_class"]].isnull().sum())
+else:
+    print("No aligned values to summarize.")
 
 print("\nSummary columns available:")
 print(all_sleep_df.columns[:10].tolist())
 print("...")
 print(all_sleep_df[["date", "total", "deep", "rem", "awake", "efficiency", "hr_average", "rmssd", "temperature_delta"]].head())
-
