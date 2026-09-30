@@ -3,6 +3,52 @@ from pathlib import Path
 import pandas as pd
 
 
+# Source sleep durations are in seconds; these values describe the whole night.
+NIGHTLY_COLUMNS = {
+    "temperature_delta": "temperature_delta",
+    "duration": "night_time_in_bed_seconds",
+    "total": "night_total_sleep_seconds",
+    "deep": "night_deep_sleep_seconds",
+    "rem": "night_rem_sleep_seconds",
+    "light": "night_light_sleep_seconds",
+    "awake": "night_awake_seconds",
+    "efficiency": "night_sleep_efficiency_percent",
+    "hr_average": "night_hr_average",
+    "hr_lowest": "night_hr_lowest",
+    "rmssd": "night_hrv_rmssd",
+}
+
+
+def observed_transitions(hypnogram):
+    """Count only adjacent 5-minute labels; do not bridge missing samples."""
+    stages = hypnogram["hypnogram_class"]
+    previous = stages.shift()
+    adjacent = hypnogram["timestamp_dt"].diff().eq(pd.Timedelta(minutes=5))
+    valid = stages.isin(["awake", "light", "deep", "rem"])
+    valid_previous = previous.isin(["awake", "light", "deep", "rem"])
+    changes = adjacent & valid & valid_previous & stages.ne(previous)
+    awakenings = changes & stages.eq("awake")
+    # No labels means unknown, rather than zero awakenings.
+    if not valid.any():
+        return pd.NA, pd.NA
+    return int(awakenings.sum()), int(changes.sum())
+
+
+def export_participant(frame, path):
+    """Keep timezone-aware alignment internally, but export readable UTC times."""
+    frame = frame.drop(columns=["participant_id", "timestamp"], errors="ignore").copy()
+    for column in ["timestamp_dt", "sleep_start", "sleep_end"]:
+        frame[column] = frame[column].dt.strftime("%Y-%m-%d %H:%M:%S")
+    frame = frame.rename(columns={
+        "timestamp_dt": "datetime_utc",
+        "sleep_start": "sleep_start_utc",
+        "sleep_end": "sleep_end_utc",
+    })
+    first = ["date", "datetime_utc", "sleep_start_utc", "sleep_end_utc"]
+    frame = frame[first + [column for column in frame if column not in first]]
+    frame.to_csv(path, index=False)
+
+
 def to_datetime_ms(series):
     return pd.to_datetime(series, unit="ms", utc=True)
 
@@ -68,6 +114,11 @@ for participant_dir in participant_dirs:
         ).sort_values("timestamp_dt")
 
         if not merged.empty:
+            for source, target in NIGHTLY_COLUMNS.items():
+                merged[target] = row[source]
+            awakenings, changes = observed_transitions(hyp_window)
+            merged["night_observed_awakenings"] = awakenings
+            merged["night_observed_stage_changes"] = changes
             merged["participant_id"] = participant_dir.name
             all_aligned.append(merged)
             participant_aligned.append(merged)
@@ -75,9 +126,9 @@ for participant_dir in participant_dirs:
     if participant_aligned:
         aligned_output_dir.mkdir(parents=True, exist_ok=True)
         participant_df = pd.concat(participant_aligned, ignore_index=True)
-        participant_df.to_csv(
+        export_participant(
+            participant_df,
             aligned_output_dir / f"{participant_dir.name}_aligned.csv",
-            index=False,
         )
 
 all_sleep_df = pd.concat(all_sleep, ignore_index=True) if all_sleep else pd.DataFrame()
@@ -97,6 +148,7 @@ print("\nSample aligned data:")
 sample_columns = [
     "participant_id", "date", "timestamp_dt", "heart_rate", "heart_rmssd",
     "hypnogram_level", "hypnogram_class",
+    "temperature_delta",
 ]
 if not aligned_df.empty:
     print(aligned_df[sample_columns].head())
@@ -105,11 +157,12 @@ else:
 
 print("\nMissing values:")
 if not aligned_df.empty:
-    print(aligned_df[["heart_rate", "heart_rmssd", "hypnogram_level", "hypnogram_class"]].isnull().sum())
+    print(aligned_df[["heart_rate", "heart_rmssd", "hypnogram_level", "hypnogram_class", "temperature_delta"]].isnull().sum())
 else:
     print("No aligned values to summarize.")
 
 print("\nSummary columns available:")
 print(all_sleep_df.columns[:10].tolist())
 print("...")
-print(all_sleep_df[["date", "total", "deep", "rem", "awake", "efficiency", "hr_average", "rmssd", "temperature_delta"]].head())
+if not all_sleep_df.empty:
+    print(all_sleep_df[["date", "total", "deep", "rem", "awake", "efficiency", "hr_average", "rmssd", "temperature_delta"]].head())

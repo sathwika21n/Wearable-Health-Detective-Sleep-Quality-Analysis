@@ -91,3 +91,48 @@ graph TD
     H --> K[Normal Night<br/>No meaningful deviation]
 
     I & J & K --> L[Dashboard + LLM Insight]
+```
+
+## Timestamp alignment and exported fields
+
+Run `python3 explore_data.py` to regenerate `aligned_data/par_*_aligned.csv`.
+These are CSV files that can be opened in Excel. Each file contains one
+participant, so neither `participant_id` nor the raw Unix timestamp is exported.
+The raw timestamps measure milliseconds since the Unix epoch, not the sampling
+interval. Signals are sampled at approximately five-minute intervals.
+
+`datetime_utc`, `sleep_start_utc`, and `sleep_end_utc` use
+`YYYY-MM-DD HH:MM:SS`. All three remain in UTC; the previous `+00:00` suffix
+meant a zero offset from UTC. No participant local timezone is assumed.
+`date` retains the source sleep record's night date. Alignment uses timezone-aware
+timestamps internally and an exact outer join within each source sleep window;
+unmatched measurements remain blank rather than being interpolated.
+
+The README's proposal goals map to these exported inputs:
+
+| Proposal measurement | Exported fields |
+| --- | --- |
+| Sleep stages and wake periods | `hypnogram_level`, `hypnogram_class`, `datetime_utc` |
+| Total sleep, deep, REM, light, and awake duration | `night_total_sleep_seconds`, `night_deep_sleep_seconds`, `night_rem_sleep_seconds`, `night_light_sleep_seconds`, `night_awake_seconds` |
+| Time in bed and sleep efficiency | `night_time_in_bed_seconds`, `night_sleep_efficiency_percent` |
+| Awakenings and stage changes | `night_observed_awakenings`, `night_observed_stage_changes` |
+| Heart rate and HRV by stage | `heart_rate`, `heart_rmssd` alongside the sleep-stage labels |
+| Nightly heart-rate and HRV summaries | `night_hr_average`, `night_hr_lowest`, `night_hrv_rmssd` |
+| Nightly temperature deviation | `temperature_delta` from `sleep.csv` |
+
+Nightly values repeat on every signal row belonging to that sleep record. Do not
+sum these repeated values or treat them as independent observations; reduce to
+one record per sleep window for nightly trends and cross-night correlations.
+Duration summaries are copied from Oura rather than estimated by counting labels.
+Observed awakenings count sleep-to-awake transitions between consecutive
+five-minute labels. Stage changes count any change between consecutive valid
+labels. Neither count bridges gaps, and a night beginning awake does not count
+as an awakening. These are coarse observed counts, not clinical arousal counts.
+
+The available files contain a nightly temperature deviation, not absolute skin
+temperature or a temperature time series. Repeating this nightly measurement
+does not provide within-night or stage-specific temperature trends; those proposal
+goals require additional data. Missing source temperatures remain blank.
+The README also mentions DREAMT, but this script processes the local IFH Affect
+Oura files. Baselines, correlations, anomaly detection, and dashboards are later
+analysis steps, not outputs of timestamp alignment.
