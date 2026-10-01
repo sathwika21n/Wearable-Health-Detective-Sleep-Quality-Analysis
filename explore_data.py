@@ -18,14 +18,49 @@ NIGHTLY_COLUMNS = {
     "rmssd": "night_hrv_rmssd",
 }
 
+VALID_STAGES = ["awake", "light", "deep", "REM"]  # REM is uppercase in data
+SLEEP_STAGES = ["light", "deep", "REM"]  # stages counted as asleep
+EPOCH = pd.Timedelta(minutes=5)  # one hypnogram label length
+
+
+def awakening_metrics(hypnogram):
+    if hypnogram.empty:
+        return pd.NA, pd.NA
+
+    hypnogram = hypnogram.sort_values("timestamp_dt").copy()
+
+    current = hypnogram["hypnogram_class"]
+    previous = current.shift()
+
+    # Only treat rows as consecutive if exactly 5 minutes apart
+    adjacent = (
+        hypnogram["timestamp_dt"]
+        .diff()
+        .eq(pd.Timedelta(minutes=5))
+    )
+
+    # Awakening = sleep -> awake
+    awakenings = (
+        adjacent
+        & current.eq("awake")
+        & previous.isin(SLEEP_STAGES)
+    )
+
+    awakening_count = int(awakenings.sum())
+
+    # Each awake epoch represents 5 minutes
+    awake_epochs = int(current.eq("awake").sum())
+    total_awake_minutes = awake_epochs * 5
+
+    return awakening_count, total_awake_minutes
 
 def observed_transitions(hypnogram):
     """Count only adjacent 5-minute labels; do not bridge missing samples."""
     stages = hypnogram["hypnogram_class"]
     previous = stages.shift()
     adjacent = hypnogram["timestamp_dt"].diff().eq(pd.Timedelta(minutes=5))
-    valid = stages.isin(["awake", "light", "deep", "rem"])
-    valid_previous = previous.isin(["awake", "light", "deep", "rem"])
+    valid = stages.isin(VALID_STAGES)  # current label is known
+    valid_previous = previous.isin(VALID_STAGES)  # previous label is known
     changes = adjacent & valid & valid_previous & stages.ne(previous)
     awakenings = changes & stages.eq("awake")
     # No labels means unknown, rather than zero awakenings.
@@ -60,6 +95,7 @@ participant_dirs = sorted(base_dir.glob("par_*"))
 
 all_sleep = []
 all_aligned = []
+nightly_awakening_rows = []
 
 for participant_dir in participant_dirs:
     sleep_path = participant_dir / "oura" / "sleep.csv"
@@ -72,7 +108,7 @@ for participant_dir in participant_dirs:
     sleep = pd.read_csv(sleep_path)
     sleep["date"] = pd.to_datetime(sleep["date"])
     sleep["bedtime_start_dt"] = to_datetime_ms(sleep["bedtime_start_timestamp"])
-    sleep["bedtime_end_dt"] = to_datetime_ms(sleep["bedtime_end_timestamp"])
+    sleep["bedtime_end_dt"] = sleep["bedtime_start_dt"] + pd.to_timedelta(sleep["duration"], unit="s")  # end = start + duration
     sleep["participant_id"] = participant_dir.name
     all_sleep.append(sleep)
 
@@ -100,29 +136,41 @@ for participant_dir in participant_dirs:
         hr_window["sleep_start"] = start
         hr_window["sleep_end"] = end
 
-        hyp_window = sleep_hypnogram[
-            (sleep_hypnogram["timestamp_dt"] >= start) & (sleep_hypnogram["timestamp_dt"] <= end)
-        ].copy()
+        n_epochs = -(-int(row["duration"]) // 300)  # epochs, rounded up
+        grid = start + EPOCH * pd.RangeIndex(n_epochs)  # this night's label times
+        hyp_window = sleep_hypnogram[sleep_hypnogram["timestamp_dt"].isin(grid)].copy()  # keep this night's labels
         hyp_window["date"] = night_date
         hyp_window["sleep_start"] = start
         hyp_window["sleep_end"] = end
-
+       
+        
         merged = hr_window.merge(
             hyp_window[["timestamp_dt", "hypnogram_level", "hypnogram_class", "date", "sleep_start", "sleep_end"]],
             on=["timestamp_dt", "date", "sleep_start", "sleep_end"],
             how="outer",
         ).sort_values("timestamp_dt")
 
+        
         if not merged.empty:
             for source, target in NIGHTLY_COLUMNS.items():
                 merged[target] = row[source]
             awakenings, changes = observed_transitions(hyp_window)
+            awakening_count, awake_minutes = awakening_metrics(hyp_window)
             merged["night_observed_awakenings"] = awakenings
             merged["night_observed_stage_changes"] = changes
+            merged["night_observed_awake_minutes"] = awake_minutes
             merged["participant_id"] = participant_dir.name
+
             all_aligned.append(merged)
             participant_aligned.append(merged)
 
+            nightly_awakening_rows.append({
+                "participant_id": participant_dir.name,
+                "date": night_date,
+                "awakening_count": awakening_count,
+                "total_awake_minutes": awake_minutes
+            })
+            
     if participant_aligned:
         aligned_output_dir.mkdir(parents=True, exist_ok=True)
         participant_df = pd.concat(participant_aligned, ignore_index=True)
@@ -133,6 +181,7 @@ for participant_dir in participant_dirs:
 
 all_sleep_df = pd.concat(all_sleep, ignore_index=True) if all_sleep else pd.DataFrame()
 aligned_df = pd.concat(all_aligned, ignore_index=True) if all_aligned else pd.DataFrame()
+
 
 print("Participants found:", len(participant_dirs))
 print("Total sleep rows:", len(all_sleep_df))
@@ -166,3 +215,70 @@ print(all_sleep_df.columns[:10].tolist())
 print("...")
 if not all_sleep_df.empty:
     print(all_sleep_df[["date", "total", "deep", "rem", "awake", "efficiency", "hr_average", "rmssd", "temperature_delta"]].head())
+
+# Save final nightly awakening table
+nightly_awakenings_df = pd.DataFrame(nightly_awakening_rows)
+
+if not nightly_awakenings_df.empty:
+    nightly_awakenings_df["participant_number"] = (
+        nightly_awakenings_df["participant_id"]
+        .str.extract(r"(\d+)")
+        .astype(int)
+    )
+
+    nightly_awakenings_df = nightly_awakenings_df.sort_values(
+        ["participant_number", "date"]
+    )
+
+    # Remove helper column BEFORE saving
+    nightly_awakenings_df = nightly_awakenings_df.drop(
+        columns="participant_number"
+    )
+
+    # Save full nightly table
+    (project_dir / "participant_nightly_awakening").mkdir(exist_ok=True)  # create output folder
+    nightly_awakenings_df.to_csv(
+        project_dir / "participant_nightly_awakening/nightly_awakenings.csv",
+        index=False
+    )
+
+    # Create participant summary
+    participant_summary = (
+        nightly_awakenings_df
+        .groupby("participant_id")
+        .agg(
+            nights=("date", "count"),
+            avg_awakenings=("awakening_count", "mean"),
+            avg_awake_minutes=("total_awake_minutes", "mean"),
+            max_awakenings=("awakening_count", "max"),
+            max_awake_minutes=("total_awake_minutes", "max")
+        )
+        .reset_index()
+    )
+
+    # Add helper column for numeric sorting
+    participant_summary["participant_number"] = (
+        participant_summary["participant_id"]
+        .str.extract(r"(\d+)")[0]
+        .astype(int)
+    )
+
+    participant_summary = participant_summary.sort_values(
+        "participant_number"
+    )
+
+    # Remove helper column BEFORE printing
+    participant_summary = participant_summary.drop(
+        columns="participant_number"
+    )
+
+    print("\nParticipant awakening summary:")
+    print(
+        participant_summary.to_string(
+            index=False,
+            float_format=lambda x: f"{x:.2f}"
+        )
+    )
+
+else:
+    print("\nNo nightly awakening data found.")
