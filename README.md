@@ -128,6 +128,19 @@ Observed awakenings count sleep-to-awake transitions between consecutive
 five-minute labels. Stage changes count any change between consecutive valid
 labels. Neither count bridges gaps, and a night beginning awake does not count
 as an awakening. These are coarse observed counts, not clinical arousal counts.
+### Awakening Detection Rule
+
+An awakening is defined as a transition from a valid sleep stage
+(`light`, `deep`, or `rem`) to `awake` between consecutive 5-minute
+sleep-stage samples.
+
+- Consecutive `awake` labels are treated as one awakening.
+- A single 5-minute awake period is retained as a short wake period.
+- Missing or invalid sleep-stage labels are treated as unknown.
+- Transitions are not counted across timestamp gaps greater than 5 minutes.
+- If a sleep window begins in the `awake` state, that period contributes to
+  total awake time but does not count as an awakening.
+- Total awake time is calculated as the number of `awake` epochs × 5 minutes.
 
 The available files contain a nightly temperature deviation, not absolute skin
 temperature or a temperature time series. Repeating this nightly measurement
