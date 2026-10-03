@@ -18,8 +18,9 @@ NIGHTLY_COLUMNS = {
     "rmssd": "night_hrv_rmssd",
 }
 
-VALID_STAGES = ["awake", "light", "deep", "rem"]
-SLEEP_STAGES = ["light", "deep", "rem"]
+VALID_STAGES = ["awake", "light", "deep", "REM"]  # REM is uppercase in data
+SLEEP_STAGES = ["light", "deep", "REM"]  # stages counted as asleep
+EPOCH = pd.Timedelta(minutes=5)  # one hypnogram label length
 
 
 def awakening_metrics(hypnogram):
@@ -58,8 +59,8 @@ def observed_transitions(hypnogram):
     stages = hypnogram["hypnogram_class"]
     previous = stages.shift()
     adjacent = hypnogram["timestamp_dt"].diff().eq(pd.Timedelta(minutes=5))
-    valid = stages.isin(["awake", "light", "deep", "rem"])
-    valid_previous = previous.isin(["awake", "light", "deep", "rem"])
+    valid = stages.isin(VALID_STAGES)  # current label is known
+    valid_previous = previous.isin(VALID_STAGES)  # previous label is known
     changes = adjacent & valid & valid_previous & stages.ne(previous)
     awakenings = changes & stages.eq("awake")
     # No labels means unknown, rather than zero awakenings.
@@ -107,7 +108,7 @@ for participant_dir in participant_dirs:
     sleep = pd.read_csv(sleep_path)
     sleep["date"] = pd.to_datetime(sleep["date"])
     sleep["bedtime_start_dt"] = to_datetime_ms(sleep["bedtime_start_timestamp"])
-    sleep["bedtime_end_dt"] = to_datetime_ms(sleep["bedtime_end_timestamp"])
+    sleep["bedtime_end_dt"] = sleep["bedtime_start_dt"] + pd.to_timedelta(sleep["duration"], unit="s")  # end = start + duration
     sleep["participant_id"] = participant_dir.name
     all_sleep.append(sleep)
 
@@ -135,9 +136,9 @@ for participant_dir in participant_dirs:
         hr_window["sleep_start"] = start
         hr_window["sleep_end"] = end
 
-        hyp_window = sleep_hypnogram[
-            (sleep_hypnogram["timestamp_dt"] >= start) & (sleep_hypnogram["timestamp_dt"] <= end)
-        ].copy()
+        n_epochs = -(-int(row["duration"]) // 300)  # epochs, rounded up
+        grid = start + EPOCH * pd.RangeIndex(n_epochs)  # this night's label times
+        hyp_window = sleep_hypnogram[sleep_hypnogram["timestamp_dt"].isin(grid)].copy()  # keep this night's labels
         hyp_window["date"] = night_date
         hyp_window["sleep_start"] = start
         hyp_window["sleep_end"] = end
@@ -235,6 +236,7 @@ if not nightly_awakenings_df.empty:
     )
 
     # Save full nightly table
+    (project_dir / "participant_nightly_awakening").mkdir(exist_ok=True)  # create output folder
     nightly_awakenings_df.to_csv(
         project_dir / "participant_nightly_awakening/nightly_awakenings.csv",
         index=False
