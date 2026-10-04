@@ -149,3 +149,33 @@ goals require additional data. Missing source temperatures remain blank.
 The README also mentions DREAMT, but this script processes the local IFH Affect
 Oura files. Baselines, correlations, anomaly detection, and dashboards are later
 analysis steps, not outputs of timestamp alignment.
+
+### Nightly feature extraction
+
+Run the feature pipeline from the project root after generating or updating the
+aligned CSVs:
+
+```bash
+python3 explore_data.py
+python3 nightly_sleep_features.py
+```
+
+The second command writes `nightly_sleep_features.csv` in the project root, with
+one row per participant sleep window. To use another input or output location,
+pass `--aligned-dir` and `--output`:
+
+```bash
+python3 nightly_sleep_features.py \
+  --aligned-dir aligned_data \
+  --output output/nightly_sleep_features.csv
+```
+
+The table includes `participant_id`, `sleep_date`, and UTC sleep-window start
+and end timestamps. `total_sleep_time_min`, `deep_sleep_min`, `rem_sleep_min`,
+`light_sleep_min`, and `awake_min` come from the Oura nightly summary fields,
+converted from seconds to minutes. `observed_awakenings_count` and
+`observed_stage_changes_count` are the aligned Oura transition counts described
+above. The script collapses repeated row-level summaries to one sleep-window
+record and stops with an error if a summary value conflicts within that window.
+Duration columns use minutes; count columns use counts. Missing source values
+remain blank in the CSV.
