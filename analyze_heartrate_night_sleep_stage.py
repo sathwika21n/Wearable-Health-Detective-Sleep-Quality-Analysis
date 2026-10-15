@@ -16,16 +16,14 @@ def process_participant_heart_rate(aligned_dir=".", output_file="participant_hea
     """
     Summarizes row-level heart rate readings across sleep windows and sleep stages.
     
-    Deliverables:
-    1. Tab 1: Nightly Sleeping HR Summary (Mean, Median, Min, Max, Valid Sample Count excluding awake stage).
-    2. Tab 2: HR-by-Stage Summary (Mean, Median, Sample Count for Light, Deep, REM, Awake stages per night).
-    3. Tab 3: Participant Stage Averages (One row per participant: Mean & Median HR across stages).
+    Tab 1: Nightly Sleeping HR Summary
+    Tab 2: HR-by-Stage Summary (per night)
+    Tab 3: Participant Stage Averages (WEIGHTED by sample count per night)
     """
     output_dir = os.path.dirname(output_file)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
     
-    # Locate all aligned CSV files
     file_pattern = os.path.join(aligned_dir, "par_*_aligned*.csv")
     csv_files = glob.glob(file_pattern)
     
@@ -36,14 +34,12 @@ def process_participant_heart_rate(aligned_dir=".", output_file="participant_hea
         print(f"No participant aligned CSV files found in directory: '{aligned_dir}'")
         return
 
-    # Sort files strictly in order from par_1 to par_24
     csv_files = sorted(set(csv_files), key=extract_participant_num)
     print(f"Found {len(csv_files)} participant file(s) to process in order from par_1 to par_24.\n")
 
     nightly_hr_rows = []
     stage_hr_rows = []
 
-    # Mapping raw stage labels to standard target categories
     STAGE_MAP = {
         'light': 'Light', 'n1': 'Light', 'n2': 'Light', 'sleep-n1': 'Light', 'sleep-n2': 'Light',
         'deep': 'Deep', 'n3': 'Deep', 'sleep-n3': 'Deep',
@@ -69,7 +65,6 @@ def process_participant_heart_rate(aligned_dir=".", output_file="participant_hea
             print(f"[{participant_id}] Missing required columns: {missing_cols}. Skipping.")
             continue
 
-        # Sort dates chronologically for each participant
         df['date_str'] = df['date'].astype(str)
         sorted_dates = sorted(df['date_str'].dropna().unique())
 
@@ -82,9 +77,7 @@ def process_participant_heart_rate(aligned_dir=".", output_file="participant_hea
             valid_hr_df['clean_stage'] = valid_hr_df['hypnogram_class'].astype(str).str.strip().str.lower()
             valid_hr_df['mapped_stage'] = valid_hr_df['clean_stage'].map(STAGE_MAP)
 
-            # ----------------------------------------------------
             # 1. Nightly Sleeping HR Summary (Excluding Awake)
-            # ----------------------------------------------------
             sleeping_mask = valid_hr_df['mapped_stage'].isin(SLEEPING_STAGES)
             sleeping_hr = valid_hr_df.loc[sleeping_mask, 'heart_rate']
             valid_samples_count = len(sleeping_hr)
@@ -107,9 +100,7 @@ def process_participant_heart_rate(aligned_dir=".", output_file="participant_hea
                 'Valid Sample Count': valid_samples_count
             })
 
-            # ----------------------------------------------------
             # 2. Stage HR Summary (Light, Deep, REM, Awake)
-            # ----------------------------------------------------
             for stage in ['Light', 'Deep', 'REM', 'Awake']:
                 stage_hr = valid_hr_df.loc[valid_hr_df['mapped_stage'] == stage, 'heart_rate']
                 stage_samples_count = len(stage_hr)
@@ -117,8 +108,10 @@ def process_participant_heart_rate(aligned_dir=".", output_file="participant_hea
                 if stage_samples_count > 0:
                     s_mean = round(stage_hr.mean(), 2)
                     s_median = round(stage_hr.median(), 2)
+                    s_sum = stage_hr.sum()  # Total HR sum for weighted average pooling
                 else:
                     s_mean = s_median = "N/A"
+                    s_sum = 0.0
 
                 stage_hr_rows.append({
                     'Participant ID': participant_id,
@@ -126,7 +119,8 @@ def process_participant_heart_rate(aligned_dir=".", output_file="participant_hea
                     'Stage': stage,
                     'Mean HR (bpm)': s_mean,
                     'Median HR (bpm)': s_median,
-                    'Sample Count': stage_samples_count
+                    'Sample Count': stage_samples_count,
+                    'Stage_HR_Sum': s_sum
                 })
 
     if not nightly_hr_rows:
@@ -136,10 +130,7 @@ def process_participant_heart_rate(aligned_dir=".", output_file="participant_hea
     nightly_hr_df = pd.DataFrame(nightly_hr_rows)
     stage_hr_df = pd.DataFrame(stage_hr_rows)
 
-    # ----------------------------------------------------
-    # 3. Participant Overall Stage Averages (Tab 3)
-    # One row per participant showing overall average HR in each stage
-    # ----------------------------------------------------
+    # 3. Weighted Participant Stage Averages (Tab 3)
     participant_stage_rows = []
     
     stage_hr_df['p_num'] = stage_hr_df['Participant ID'].apply(extract_participant_num)
@@ -147,37 +138,49 @@ def process_participant_heart_rate(aligned_dir=".", output_file="participant_hea
 
     for pid in sorted_pids:
         p_group = stage_hr_df[stage_hr_df['Participant ID'] == pid]
-        
         row = {'Participant ID': pid}
         
         for stage in ['Light', 'Deep', 'REM', 'Awake']:
             stage_group = p_group[p_group['Stage'] == stage]
-            valid_means = pd.to_numeric(stage_group['Mean HR (bpm)'], errors='coerce').dropna()
             total_samples = stage_group['Sample Count'].sum()
+            total_hr_sum = stage_group['Stage_HR_Sum'].sum()
             
-            if not valid_means.empty and total_samples > 0:
-                row[f'{stage} Mean HR (bpm)'] = round(valid_means.mean(), 2)
-                row[f'{stage} Median HR (bpm)'] = round(stage_group['Median HR (bpm)'].replace('N/A', np.nan).dropna().astype(float).mean(), 2)
-                row[f'{stage} Total Samples'] = total_samples
+            if total_samples > 0:
+                # Weighted Mean = Total Sum of Readings / Total Valid Samples
+                weighted_mean = round(total_hr_sum / total_samples, 2)
+                
+                # Weighted Median Approximation / Average Nightly Median
+                valid_medians = pd.to_numeric(stage_group['Median HR (bpm)'], errors='coerce')
+                weights = stage_group['Sample Count']
+                valid_mask = valid_medians.notna() & (weights > 0)
+                
+                if valid_mask.any():
+                    weighted_median = round(np.average(valid_medians[valid_mask], weights=weights[valid_mask]), 2)
+                else:
+                    weighted_median = "N/A"
+
+                row[f'{stage} Weighted Mean HR (bpm)'] = weighted_mean
+                row[f'{stage} Weighted Median HR (bpm)'] = weighted_median
+                row[f'{stage} Total Valid Samples'] = total_samples
             else:
-                row[f'{stage} Mean HR (bpm)'] = "N/A"
-                row[f'{stage} Median HR (bpm)'] = "N/A"
-                row[f'{stage} Total Samples'] = 0
+                row[f'{stage} Weighted Mean HR (bpm)'] = "N/A"
+                row[f'{stage} Weighted Median HR (bpm)'] = "N/A"
+                row[f'{stage} Total Valid Samples'] = 0
                 
         participant_stage_rows.append(row)
 
     participant_stage_df = pd.DataFrame(participant_stage_rows)
 
-    if 'p_num' in stage_hr_df.columns:
-        stage_hr_df.drop(columns=['p_num'], inplace=True)
+    # Clean internal calculation columns before export
+    if 'Stage_HR_Sum' in stage_hr_df.columns:
+        stage_hr_df.drop(columns=['Stage_HR_Sum', 'p_num'], inplace=True)
 
-    # Export deliverables to a 3-tab Excel file
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         nightly_hr_df.to_excel(writer, sheet_name='Nightly Sleeping HR', index=False)
         stage_hr_df.to_excel(writer, sheet_name='HR by Stage', index=False)
         participant_stage_df.to_excel(writer, sheet_name='Participant Stage Averages', index=False)
 
-    print(f"Successfully generated 3-tab HR summary file -> '{output_file}'")
+    print(f"Successfully generated weighted HR summary workbook -> '{output_file}'")
 
 if __name__ == "__main__":
     process_participant_heart_rate()
