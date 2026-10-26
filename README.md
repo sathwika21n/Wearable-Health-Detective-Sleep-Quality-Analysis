@@ -179,3 +179,22 @@ above. The script collapses repeated row-level summaries to one sleep-window
 record and stops with an error if a summary value conflicts within that window.
 Duration columns use minutes; count columns use counts. Missing source values
 remain blank in the CSV.
+
+### Sleep-score modeling table
+
+Run `python3 build_sleep_score_dataset.py` to create
+`model_ready_sleep_score.csv`, with one labeled row per participant-night and
+Oura's overall `score` as `target_sleep_score`. The model-input whitelist is
+`average_heart_rate_bpm`, `lowest_heart_rate_bpm`, `hrv_rmssd_ms`,
+`average_breath_rate_bpm`, and `temperature_delta_c`. The script deliberately
+excludes every `score_*` component and sleep metrics used to form Oura's Sleep
+Score, including sleep duration, stage durations, efficiency, latency,
+restfulness, and timing. Only the listed features are exported, so additional
+source fields cannot silently enter the model table. Missing feature values
+remain blank for downstream preprocessing; the script does not impute them.
+`participant_id` and `sleep_date` are retained as identifiers for grouped
+evaluation and should not be passed as predictors by default.
+
+The output is a model-ready labeled feature table, not a trained model or a
+validation result. For evaluation, split by participant (rather than randomly
+by night) if the goal is to estimate performance on previously unseen users.
