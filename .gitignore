@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated dashboard output (rebuild with build_change_detection_table.py)
+change_detection_results.csv

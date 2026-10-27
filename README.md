@@ -198,3 +198,55 @@ evaluation and should not be passed as predictors by default.
 The output is a model-ready labeled feature table, not a trained model or a
 validation result. For evaluation, split by participant (rather than randomly
 by night) if the goal is to estimate performance on previously unseen users.
+
+### Streamlit sleep dashboard
+
+Generate the dashboard-ready table from `aligned_data/`, then run the dashboard
+from the project root. If Streamlit or pandas is not installed, install it first:
+
+```bash
+python3 -m pip install streamlit pandas
+python3 build_change_detection_table.py
+streamlit run frontend/app.py
+```
+
+The generator writes `change_detection_results.csv`, which the dashboard loads
+automatically when present. It uses the aligned nightly data and the prior-night
+windows and flag rules documented in `baseline_deviations.py`; the existing
+multi-window Excel workbook is also produced by `baseline_deviations.py`, which
+now writes the same CSV after saving the workbook. The
+dashboard sidebar lets users select a participant, baseline window, and night,
+or upload another CSV in the same format. If the generated CSV is absent, the
+page falls back to `frontend/sample_sleep_dashboard.csv`.
+
+The input is **long format**, with one row per participant, night, metric, and
+baseline window. Required columns are:
+
+| Field | Meaning |
+| --- | --- |
+| `participant_id` | Participant identifier used for selection. |
+| `night_date` | Night date in `YYYY-MM-DD` format. |
+| `metric` | Stable metric key, such as `total_sleep_min` or `sleeping_hr_avg_bpm`. |
+| `unit` | Display unit, such as `min`, `bpm`, `count`, `ms`, or `°C`. |
+| `observed_value` | Value measured for the selected night; blank if missing. |
+| `baseline_value` | Reference value for the comparison window; blank if unavailable. |
+| `difference` | Observed minus baseline, in the metric's unit; blank if not calculable. |
+| `baseline_window` | Comparison-window key, such as `7_days` (shown as “Previous 7 nights”). |
+| `baseline_nights` | Number of valid prior nights used. |
+| `minimum_nights` | Minimum valid prior nights required for this comparison. |
+| `threshold_type` | `absolute_difference` for the one-night comparison or `absolute_z_score` for longer windows. |
+| `threshold_value` | Applied threshold: 10 units by default, 5 bpm for sleeping HR, 0.5 °C for temperature; z-score threshold 2.0 for longer windows. |
+| `status` | One of `change`, `normal`, `missing`, or `insufficient_history`. |
+| `message` | Optional plain-language note shown with the metric or flag. |
+
+The generated file also includes `baseline_std` and `z_score` to support auditing
+longer-window comparisons. `baseline_window` values are `1_day`, `7_days`,
+`14_days`, and `30_days`; these windows count prior observed nights, not calendar
+days. The dashboard displays the selected window's observed value, baseline,
+difference, applied threshold, and flag status.
+
+For `missing`, keep the row and set the missing measurement to blank. For
+`insufficient_history`, keep the observed value but leave baseline and
+difference blank and populate the baseline counts. A selected
+participant-night-window must have at most one row per metric. The dashboard
+displays supplied statuses and does not recalculate baselines or thresholds.
