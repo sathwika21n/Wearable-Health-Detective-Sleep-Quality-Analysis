@@ -5,6 +5,7 @@ import numpy as np
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from build_change_detection_table import build_change_table
 
 def extract_participant_num(filename):
     """Extracts integer participant number for natural sorting (par_1 -> 1, par_24 -> 24)."""
@@ -17,8 +18,9 @@ def extract_participant_num(filename):
 
 def build_multi_window_participant_report(
     aligned_dir=".",
-    awakening_file="nightly_awakenings.csv",
-    output_excel="participant_baseline_change_evaluations_multi_window.xlsx"
+    awakening_file=os.path.join(os.path.dirname(__file__), "participant_nightly_awakening", "nightly_awakenings.csv"),
+    output_excel="participant_baseline_change_evaluations_multi_window.xlsx",
+    output_csv=os.path.join(os.path.dirname(__file__), "change_detection_results.csv"),
 ):
     """
     Builds an Excel workbook with SEPARATE tabs for each participant (par_1 through par_24).
@@ -287,6 +289,12 @@ def build_multi_window_participant_report(
 
     wb.save(output_excel)
     print(f"Successfully created workbook '{output_excel}' with {len(stage_pids)} participant tabs!")
+
+    # Export the same baseline/change rules in a normalized format for the
+    # Streamlit dashboard and downstream analysis.
+    change_table = build_change_table(aligned_dir, awakening_file)
+    change_table.to_csv(output_csv, index=False)
+    print(f"Successfully created dashboard table '{output_csv}' with {len(change_table)} comparisons!")
 
 if __name__ == "__main__":
     build_multi_window_participant_report()
