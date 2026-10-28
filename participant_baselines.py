@@ -5,24 +5,23 @@ from up to the participant's 10 immediately preceding nights. Temperature is
 the source nightly temperature delta, not an absolute skin-temperature
 measurement.
 
-Run from the workspace root:
+Run from the project root:
     python participant_baselines.py
 """
 
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
 
-WORKSPACE_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = WORKSPACE_DIR / "Wearable-Health-Detective-Sleep-Quality-Analysis"
+PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_SLEEP_FEATURES = PROJECT_DIR / "nightly_sleep_features.csv"
 DEFAULT_PHYSIOLOGY = PROJECT_DIR / "model_ready_sleep_score.csv"
-DEFAULT_OUTPUT = WORKSPACE_DIR / "participant_baselines.csv"
-DEFAULT_SUMMARY_OUTPUT = WORKSPACE_DIR / "participant_baseline_summary.csv"
+DEFAULT_OUTPUT = PROJECT_DIR / "participant_baselines.csv"
 
 BASELINE_METRICS = {
     "total_sleep_time_min": "typical_sleep_time_min",
@@ -30,6 +29,25 @@ BASELINE_METRICS = {
     "temperature_delta_c": "typical_temperature_delta_c",
 }
 LOOKBACK_NIGHTS = 10
+
+
+def _write_csv(data: pd.DataFrame, output_path: Path) -> Path:
+    """Write a CSV, using a unique sibling path if the destination is locked."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        data.to_csv(output_path, index=False)
+    except PermissionError:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        fallback_path = output_path.with_name(
+            f"{output_path.stem}_{timestamp}{output_path.suffix}"
+        )
+        data.to_csv(fallback_path, index=False)
+        print(
+            f"Could not overwrite {output_path}; it may be open in another "
+            f"program. Wrote the output to {fallback_path} instead."
+        )
+        return fallback_path
+    return output_path
 
 
 def _read_nights(path: Path, required_columns: set[str]) -> pd.DataFrame:
@@ -112,20 +130,14 @@ def main() -> None:
     parser.add_argument("--sleep-features", type=Path, default=DEFAULT_SLEEP_FEATURES)
     parser.add_argument("--physiology", type=Path, default=DEFAULT_PHYSIOLOGY)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--summary-output", type=Path, default=DEFAULT_SUMMARY_OUTPUT)
     args = parser.parse_args()
 
     baselines = build_prior_night_baselines(args.sleep_features, args.physiology)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    baselines.to_csv(args.output, index=False)
-    summary = baselines.groupby("participant_id", sort=False).tail(1)
-    args.summary_output.parent.mkdir(parents=True, exist_ok=True)
-    summary.to_csv(args.summary_output, index=False)
+    output_path = _write_csv(baselines, args.output)
     print(
         f"Wrote prior-night baselines for {len(baselines)} participant-nights "
-        f"across {baselines['participant_id'].nunique()} participants to {args.output}"
+        f"across {baselines['participant_id'].nunique()} participants"
     )
-    print(f"Wrote each participant's latest prior-night baseline to {args.summary_output}")
     print(
         f"Baselines use up to the {LOOKBACK_NIGHTS} immediately preceding nights; "
         "the first night per participant has no baseline."
