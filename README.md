@@ -201,23 +201,27 @@ by night) if the goal is to estimate performance on previously unseen users.
 
 ### Streamlit sleep dashboard
 
-Generate the dashboard-ready table from `aligned_data/`, then run the dashboard
+Run the dashboard using the participant data in `aligned_data/`
 from the project root. If Streamlit or pandas is not installed, install it first:
 
 ```bash
 python3 -m pip install streamlit pandas
-python3 build_change_detection_table.py
 streamlit run frontend/app.py
 ```
 
-The generator writes `change_detection_results.csv`, which the dashboard loads
-automatically when present. It uses the aligned nightly data and the prior-night
+The dashboard loads `change_detection_results.csv` when present, or generates it
+from `aligned_data/` on first launch using `build_change_detection_table.py`.
+To refresh results after updating the input data, run
+`python3 build_change_detection_table.py` and reload the dashboard.
+It uses the aligned nightly data and the prior-night
 windows and flag rules documented in `baseline_deviations.py`; the existing
 multi-window Excel workbook is also produced by `baseline_deviations.py`, which
 now writes the same CSV after saving the workbook. The
 dashboard sidebar lets users select a participant, baseline window, and night,
-or upload another CSV in the same format. If the generated CSV is absent, the
-page falls back to `frontend/sample_sleep_dashboard.csv`.
+or upload another CSV in the same format. Demonstration data from
+`frontend/sample_sleep_dashboard.csv` is available only through the explicit
+**Use sample data** option; missing or invalid project inputs show an error
+rather than silently substituting sample results.
 
 The input is **long format**, with one row per participant, night, metric, and
 baseline window. Required columns are:
@@ -246,7 +250,9 @@ days. The dashboard displays the selected window's observed value, baseline,
 difference, applied threshold, and flag status.
 
 For `missing`, keep the row and set the missing measurement to blank. For
-`insufficient_history`, keep the observed value but leave baseline and
-difference blank and populate the baseline counts. A selected
+`insufficient_history`, keep the observed value and populate the baseline
+counts. The generator may retain a partial baseline for auditing, but leaves the
+difference blank; the UI shows the history requirement rather than a comparison.
+A selected
 participant-night-window must have at most one row per metric. The dashboard
 displays supplied statuses and does not recalculate baselines or thresholds.
