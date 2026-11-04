@@ -93,6 +93,14 @@ graph TD
     I & J & K --> L[Dashboard + LLM Insight]
 ```
 
+## Installing dependencies
+
+All scripts and the dashboard use the packages listed in `requirements.txt`:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
 ## Timestamp alignment and exported fields
 
 Run `python3 explore_data.py` to regenerate `aligned_data/par_*_aligned.csv`.
