@@ -7,6 +7,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from charts import show_night_timeline
+
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
@@ -184,6 +186,8 @@ if selected["metric"].duplicated(keep=False).any():
 
 st.subheader(f"Participant {participant} · Night of {pd.Timestamp(night).strftime('%B %d, %Y')}")
 st.caption("Units appear beside each observed value. Differences are observed minus baseline.")
+
+show_night_timeline(participant, night)
 
 changes = selected.loc[selected["status"].eq("change")]
 missing = selected.loc[selected["status"].eq("missing") | selected["observed_value"].isna()]
