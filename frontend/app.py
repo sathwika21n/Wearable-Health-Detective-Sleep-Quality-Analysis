@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import pandas as pd
 import streamlit as st
@@ -12,6 +13,9 @@ APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
 SAMPLE_PATH = APP_DIR / "sample_sleep_dashboard.csv"
 GENERATED_PATH = PROJECT_DIR / "change_detection_results.csv"
+sys.path.insert(0, str(PROJECT_DIR))
+from build_change_detection_table import build_change_table
+
 REQUIRED_COLUMNS = {
     "participant_id", "night_date", "metric", "unit", "observed_value",
     "baseline_value", "difference", "baseline_window", "baseline_nights",
@@ -42,17 +46,20 @@ WINDOW_LABELS = {
 }
 
 
-def load_dashboard_data(uploaded_file=None) -> tuple[pd.DataFrame, str]:
-    """Load upload, generated project results, or the sample fallback, in that order."""
+def load_dashboard_data(uploaded_file=None, use_sample=False) -> tuple[pd.DataFrame, str]:
+    """Load an upload, an explicit sample, or generated participant results."""
     if uploaded_file is not None:
         source = uploaded_file
         source_name = uploaded_file.name
-    elif GENERATED_PATH.exists():
+    elif use_sample:
+        source = SAMPLE_PATH
+        source_name = f"{SAMPLE_PATH.name} (sample data)"
+    else:
+        if not GENERATED_PATH.exists():
+            with st.spinner("Generating participant baseline and change-detection results…"):
+                build_change_table().to_csv(GENERATED_PATH, index=False)
         source = GENERATED_PATH
         source_name = f"{GENERATED_PATH.name} (generated project results)"
-    else:
-        source = SAMPLE_PATH
-        source_name = f"{SAMPLE_PATH.name} (sample fallback)"
     frame = pd.read_csv(source)
     missing = REQUIRED_COLUMNS - set(frame.columns)
     if missing:
@@ -133,17 +140,19 @@ st.caption("Explore nightly sleep metrics and personal baseline changes.")
 with st.sidebar:
     st.header("Data source")
     uploaded = st.file_uploader("Upload dashboard CSV", type=["csv"])
+    use_sample = st.checkbox("Use sample data", value=False, disabled=uploaded is not None)
     if uploaded is not None:
         st.caption("Using uploaded CSV.")
-    elif GENERATED_PATH.exists():
-        st.caption("Using the generated baseline and change-detection table.")
+    elif use_sample:
+        st.caption("Using demonstration data, not actual participant results.")
     else:
-        st.caption("Generated results not found; using documented sample data.")
+        st.caption("Using project results; generated from aligned data if needed.")
 
 try:
-    data, source_name = load_dashboard_data(uploaded)
+    data, source_name = load_dashboard_data(uploaded, use_sample)
 except (OSError, pd.errors.ParserError, ValueError) as exc:
     st.error(f"Could not load dashboard data: {exc}")
+    st.info("Generate project results with `python3 build_change_detection_table.py`, upload a dashboard CSV, or select 'Use sample data'.")
     st.stop()
 
 if data.empty:
@@ -191,7 +200,9 @@ insufficient = selected.loc[selected["status"].eq("insufficient_history")]
 summary_cols = st.columns(3)
 summary_cols[0].metric("Metrics shown", len(selected))
 summary_cols[1].metric("Changes detected", len(changes))
-summary_cols[2].metric("Data gaps / short history", len(missing) + len(insufficient))
+summary_cols[2].metric("Data gaps / short history", len(selected.loc[
+    selected["status"].isin({"missing", "insufficient_history"}) | selected["observed_value"].isna()
+]))
 
 if selected.empty:
     st.warning("No metrics are available for the selected night.")
