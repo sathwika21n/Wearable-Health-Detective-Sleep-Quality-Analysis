@@ -186,62 +186,87 @@ st.subheader(f"Participant {participant} · Night of {pd.Timestamp(night).strfti
 st.caption("Units appear beside each observed value. Differences are observed minus baseline.")
 
 changes = selected.loc[selected["status"].eq("change")]
-missing = selected.loc[selected["status"].eq("missing") | selected["observed_value"].isna()]
-insufficient = selected.loc[selected["status"].eq("insufficient_history")]
+unavailable = selected[
+    selected["status"].isin({"missing", "insufficient_history"})
+    | selected["observed_value"].isna()
+]
 summary_cols = st.columns(3)
 summary_cols[0].metric("Metrics shown", len(selected))
 summary_cols[1].metric("Changes detected", len(changes))
-summary_cols[2].metric("Data gaps / short history", len(missing) + len(insufficient))
+summary_cols[2].metric("Data gaps / short history", len(unavailable))
 
 if selected.empty:
     st.warning("No metrics are available for the selected night.")
 else:
     preferred_order = list(METRIC_LABELS)
-    selected["_order"] = selected["metric"].map({name: i for i, name in enumerate(preferred_order)}).fillna(len(preferred_order))
+    order = {name: index for index, name in enumerate(preferred_order)}
+    selected["_order"] = selected["metric"].map(order).fillna(len(order))
     selected = selected.sort_values(["_order", "metric"]).drop(columns="_order")
-    st.markdown("### Nightly metrics and comparisons")
-    for start in range(0, len(selected), 4):
-        cards = st.columns(4)
-        for card, (_, row) in zip(cards, selected.iloc[start:start + 4].iterrows()):
-            with card:
-                show_metric_card(row)
 
-    st.markdown("### Change-detection details")
-    if changes.empty:
-        st.info("No changes were flagged for this night.")
-    else:
-        details = changes.copy()
-        details["threshold"] = details.apply(
-            lambda row: (
-                f"|difference| ≥ {format_value(row['threshold_value'], row['unit'])}"
-                if row["threshold_type"] == "absolute_difference" and pd.notna(row["threshold_value"])
-                else f"|z-score| ≥ {row['threshold_value']:g}"
-                if row["threshold_type"] == "absolute_z_score" and pd.notna(row["threshold_value"])
-                else "—"
-            ),
-            axis=1,
-        )
-        details["metric"] = details["metric"].map(METRIC_LABELS).fillna(details["metric"])
-        details = details.rename(columns={
-            "metric": "Metric", "observed_value": "Observed", "baseline_value": "Baseline",
-            "difference": "Difference", "unit": "Unit", "baseline_window": "Baseline window",
-            "threshold": "Applied threshold", "baseline_std": "Baseline SD",
-            "z_score": "Z-score", "message": "Details",
-        })
-        st.dataframe(
-            details[[
-                "Metric", "Observed", "Baseline", "Difference", "Unit", "Baseline window",
-                "Applied threshold", "Baseline SD", "Z-score", "Details",
-            ]],
-            hide_index=True,
-            use_container_width=True,
-        )
+    changed_metrics = selected.loc[selected["status"].eq("change")]
+    normal_metrics = selected.loc[selected["status"].eq("normal")]
+    unavailable_metrics = selected.loc[
+        selected["status"].isin({"missing", "insufficient_history"})
+        | selected["observed_value"].isna()
+    ]
 
-    if not missing.empty or not insufficient.empty:
-        st.markdown("### Data availability")
-        if not missing.empty:
-            labels = ", ".join(METRIC_LABELS.get(value, value) for value in missing["metric"])
-            st.warning(f"Missing measurements: {labels}. No baseline difference is shown for these metrics.")
-        if not insufficient.empty:
-            labels = ", ".join(METRIC_LABELS.get(value, value) for value in insufficient["metric"])
-            st.info(f"Insufficient history: {labels}. A baseline comparison needs more prior nights.")
+    def show_metric_group(title: str, explanation: str, frame: pd.DataFrame, empty_message: str) -> None:
+        st.markdown(f"### {title}")
+        st.caption(explanation)
+        if frame.empty:
+            st.info(empty_message)
+            return
+        for start in range(0, len(frame), 4):
+            cards = st.columns(4)
+            for card, (_, row) in zip(cards, frame.iloc[start:start + 4].iterrows()):
+                with card:
+                    show_metric_card(row)
+
+    show_metric_group(
+        "Changes to review",
+        "These measurements crossed the selected change-detection rule and are the highest-priority items to review.",
+        changed_metrics,
+        "No measurements crossed the change-detection rule for this night.",
+    )
+    show_metric_group(
+        "Within the usual range",
+        "These measurements were available and did not cross the selected change-detection rule.",
+        normal_metrics,
+        "No measurements are available in this group.",
+    )
+    show_metric_group(
+        "Missing data or not enough history",
+        "These measurements could not be compared reliably because a value is missing or there are too few prior nights.",
+        unavailable_metrics,
+        "All displayed measurements have enough data for a comparison.",
+    )
+
+    if not changed_metrics.empty:
+        with st.expander("Technical change-detection details"):
+            st.caption("This table is for reviewing the values and rules behind the change flags.")
+            details = changed_metrics.copy()
+            details["threshold"] = details.apply(
+                lambda row: (
+                    f"|difference| ≥ {format_value(row['threshold_value'], row['unit'])}"
+                    if row["threshold_type"] == "absolute_difference" and pd.notna(row["threshold_value"])
+                    else f"|z-score| ≥ {row['threshold_value']:g}"
+                    if row["threshold_type"] == "absolute_z_score" and pd.notna(row["threshold_value"])
+                    else "—"
+                ),
+                axis=1,
+            )
+            details["metric"] = details["metric"].map(METRIC_LABELS).fillna(details["metric"])
+            details = details.rename(columns={
+                "metric": "Metric", "observed_value": "Observed", "baseline_value": "Baseline",
+                "difference": "Difference", "unit": "Unit", "baseline_window": "Baseline window",
+                "threshold": "Applied threshold", "baseline_std": "Baseline SD",
+                "z_score": "Z-score", "message": "Details",
+            })
+            st.dataframe(
+                details[[
+                    "Metric", "Observed", "Baseline", "Difference", "Unit", "Baseline window",
+                    "Applied threshold", "Baseline SD", "Z-score", "Details",
+                ]],
+                hide_index=True,
+                use_container_width=True,
+            )
