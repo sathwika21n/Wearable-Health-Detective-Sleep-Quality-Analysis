@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from charts import show_night_timeline
+from insights import DISCLAIMER, night_facts, summarize
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -186,6 +187,14 @@ if selected["metric"].duplicated(keep=False).any():
 
 st.subheader(f"Participant {participant} · Night of {pd.Timestamp(night).strftime('%B %d, %Y')}")
 st.caption("Units appear beside each observed value. Differences are observed minus baseline.")
+
+night_summary = summarize(night_facts(selected, METRIC_LABELS))
+with st.container(border=True):
+    st.markdown("### What stood out")
+    st.markdown(f"**{night_summary.headline}**")
+    for sentence in night_summary.details:
+        st.markdown(f"- {sentence}")
+    st.caption(f"Rule-based summary. {DISCLAIMER}")
 
 show_night_timeline(participant, night)
 
