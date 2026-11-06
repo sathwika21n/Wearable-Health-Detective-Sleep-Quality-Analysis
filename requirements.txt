@@ -1,0 +1,8 @@
+pandas>=2.0
+numpy
+scipy
+matplotlib
+openpyxl
+streamlit>=1.37
+altair>=5
+pytest
