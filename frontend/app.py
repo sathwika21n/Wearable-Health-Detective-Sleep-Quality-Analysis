@@ -7,8 +7,9 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from ai_insights import get_summary
 from charts import show_night_timeline
-from insights import DISCLAIMER, night_facts, summarize
+from insights import DISCLAIMER, night_facts
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -143,6 +144,17 @@ with st.sidebar:
     else:
         st.caption("Generated results not found; using documented sample data.")
 
+    st.divider()
+    st.header("Insights")
+    use_ai = st.toggle(
+        "Use AI-generated insights",
+        value=False,
+        help=(
+            "Uses AI when an API key is available. "
+            "If AI is unavailable or fails, the dashboard automatically uses the rule-based summary."
+        ),
+    )
+
 try:
     data, source_name = load_dashboard_data(uploaded)
 except (OSError, pd.errors.ParserError, ValueError) as exc:
@@ -188,13 +200,14 @@ if selected["metric"].duplicated(keep=False).any():
 st.subheader(f"Participant {participant} · Night of {pd.Timestamp(night).strftime('%B %d, %Y')}")
 st.caption("Units appear beside each observed value. Differences are observed minus baseline.")
 
-night_summary = summarize(night_facts(selected, METRIC_LABELS))
+facts = night_facts(selected, METRIC_LABELS)
+night_summary, insight_source = get_summary(facts, use_ai=use_ai)
 with st.container(border=True):
     st.markdown("### What stood out")
     st.markdown(f"**{night_summary.headline}**")
     for sentence in night_summary.details:
         st.markdown(f"- {sentence}")
-    st.caption(f"Rule-based summary. {DISCLAIMER}")
+    st.caption(f"{insight_source} summary. {DISCLAIMER}")
 
 show_night_timeline(participant, night)
 
