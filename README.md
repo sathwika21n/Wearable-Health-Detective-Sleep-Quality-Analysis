@@ -1,5 +1,15 @@
 # Wearable-Health-Detective-Sleep-Quality-Analysis
 
+## Repository layout
+
+- `scripts/` contains the Python analysis and data-processing scripts.
+- `data/` contains the source participant data.
+- `aligned_data/` contains timestamp-aligned participant CSVs.
+- `outputs/` contains generated tables, reports, and analysis results.
+- `frontend/` contains the Streamlit dashboard.
+
+Run the commands below from the repository root.
+
 Team 7
 Team members: Sathwika Thatiparthi, Hai Nguyen, Nitin Thota, Abhiram Gunna, Youngjun Ryoo, Joshua Feng
 
@@ -103,7 +113,7 @@ python3 -m pip install -r requirements.txt
 
 ## Timestamp alignment and exported fields
 
-Run `python3 explore_data.py` to regenerate `aligned_data/par_*_aligned.csv`.
+Run `python3 scripts/explore_data.py` to regenerate `aligned_data/par_*_aligned.csv`.
 These are CSV files that can be opened in Excel. Each file contains one
 participant, so neither `participant_id` nor the raw Unix timestamp is exported.
 The raw timestamps measure milliseconds since the Unix epoch, not the sampling
@@ -164,18 +174,18 @@ Run the feature pipeline from the project root after generating or updating the
 aligned CSVs:
 
 ```bash
-python3 explore_data.py
-python3 nightly_sleep_features.py
+python3 scripts/explore_data.py
+python3 scripts/nightly_sleep_features.py
 ```
 
-The second command writes `nightly_sleep_features.csv` in the project root, with
+The second command writes `outputs/nightly_sleep_features.csv`, with
 one row per participant sleep window. To use another input or output location,
 pass `--aligned-dir` and `--output`:
 
 ```bash
-python3 nightly_sleep_features.py \
+python3 scripts/nightly_sleep_features.py \
   --aligned-dir aligned_data \
-  --output output/nightly_sleep_features.csv
+  --output outputs/nightly_sleep_features.csv
 ```
 
 The table includes `participant_id`, `sleep_date`, and UTC sleep-window start
@@ -190,8 +200,8 @@ remain blank in the CSV.
 
 ### Sleep-score modeling table
 
-Run `python3 build_sleep_score_dataset.py` to create
-`model_ready_sleep_score.csv`, with one labeled row per participant-night and
+Run `python3 scripts/build_sleep_score_dataset.py` to create
+`outputs/model_ready_sleep_score.csv`, with one labeled row per participant-night and
 Oura's overall `score` as `target_sleep_score`. The model-input whitelist is
 `average_heart_rate_bpm`, `lowest_heart_rate_bpm`, `hrv_rmssd_ms`,
 `average_breath_rate_bpm`, and `temperature_delta_c`. The script deliberately
@@ -214,13 +224,13 @@ from the project root. If Streamlit or pandas is not installed, install it first
 
 ```bash
 python3 -m pip install streamlit pandas
-python3 build_change_detection_table.py
+python3 scripts/build_change_detection_table.py
 streamlit run frontend/app.py
 ```
 
-The generator writes `change_detection_results.csv`, which the dashboard loads
+The generator writes `outputs/change_detection_results.csv`, which the dashboard loads
 automatically when present. It uses the aligned nightly data and the prior-night
-windows and flag rules documented in `baseline_deviations.py`; the existing
+windows and flag rules documented in `scripts/baseline_deviations.py`; the existing
 multi-window Excel workbook is also produced by `baseline_deviations.py`, which
 now writes the same CSV after saving the workbook. The
 dashboard sidebar lets users select a participant, baseline window, and night,

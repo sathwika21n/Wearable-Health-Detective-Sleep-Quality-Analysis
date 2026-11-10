@@ -113,14 +113,14 @@ def main() -> None:
     parser.add_argument(
         "--aligned-dir",
         type=Path,
-        default=Path(__file__).resolve().parent / "aligned_data",
+        default=Path(__file__).resolve().parent.parent / "aligned_data",
         help="Folder containing par_*_aligned.csv files (default: ./aligned_data)",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(__file__).resolve().parent / "nightly_sleep_features.csv",
-        help="Output CSV path (default: ./nightly_sleep_features.csv)",
+        default=Path(__file__).resolve().parent.parent / "outputs" / "nightly_sleep_features.csv",
+        help="Output CSV path (default: ./outputs/nightly_sleep_features.csv)",
     )
     args = parser.parse_args()
 

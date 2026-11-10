@@ -6,10 +6,10 @@ import matplotlib.pyplot as plt
 
 
 # Project folders
-PROJECT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = Path(__file__).resolve().parent.parent
 
-CORRELATION_DIR = PROJECT_DIR / "correlation_results"
-OUTPUT_DIR = PROJECT_DIR / "visualization_results"
+CORRELATION_DIR = PROJECT_DIR / "outputs" / "correlation_results"
+OUTPUT_DIR = PROJECT_DIR / "outputs" / "visualization_results"
 
 NIGHTLY_FILE = CORRELATION_DIR / "nightly_correlation_features.csv"
 CORRELATION_FILE = CORRELATION_DIR / "nightly_correlations.csv"

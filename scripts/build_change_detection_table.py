@@ -5,7 +5,7 @@ while preserving inputs needed to audit each comparison. It exports one row per
 participant, night, metric, and baseline window.
 
 Run from the project root:
-    python3 build_change_detection_table.py
+    python3 scripts/build_change_detection_table.py
 """
 
 from __future__ import annotations
@@ -16,10 +16,10 @@ from pathlib import Path
 import pandas as pd
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_ALIGNED_DIR = PROJECT_DIR / "aligned_data"
-DEFAULT_AWAKENING_FILE = PROJECT_DIR / "participant_nightly_awakening" / "nightly_awakenings.csv"
-DEFAULT_OUTPUT = PROJECT_DIR / "change_detection_results.csv"
+DEFAULT_AWAKENING_FILE = PROJECT_DIR / "outputs" / "participant_nightly_awakening" / "nightly_awakenings.csv"
+DEFAULT_OUTPUT = PROJECT_DIR / "outputs" / "change_detection_results.csv"
 
 # Each window counts prior observed nights, not calendar days.
 WINDOWS = [
