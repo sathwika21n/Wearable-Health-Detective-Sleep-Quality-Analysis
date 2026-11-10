@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from charts import show_night_timeline
+from charts import show_night_timeline, show_temperature_trend
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -187,6 +187,7 @@ if selected["metric"].duplicated(keep=False).any():
 st.subheader(f"Participant {participant} · Night of {pd.Timestamp(night).strftime('%B %d, %Y')}")
 st.caption("Units appear beside each observed value. Differences are observed minus baseline.")
 
+show_temperature_trend(participant_data, participant, baseline_window, night)
 show_night_timeline(participant, night)
 
 changes = selected.loc[selected["status"].eq("change")]
