@@ -258,3 +258,15 @@ For `missing`, keep the row and set the missing measurement to blank. For
 difference blank and populate the baseline counts. A selected
 participant-night-window must have at most one row per metric. The dashboard
 displays supplied statuses and does not recalculate baselines or thresholds.
+
+## Optional AI Insights
+
+AI-generated insights are optional. Without an API key, the dashboard uses the rule-based summary.
+
+To enable AI insights:
+1. Copy `.env.example` to `.env`
+2. Add your OpenAI API key to `.env`
+3. Install dependencies with `python -m pip install -r requirements.txt`
+4. Run with `python -m streamlit run frontend/app.py`
+
+Do not commit `.env`.

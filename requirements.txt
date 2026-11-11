@@ -6,3 +6,6 @@ openpyxl
 streamlit>=1.37
 altair>=5
 pytest
+openai
+python-dotenv
+brotli>=1.2.0
