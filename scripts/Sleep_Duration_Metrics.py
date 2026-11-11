@@ -2,7 +2,7 @@ import os
 import glob
 import pandas as pd
 
-def generate_participant_reports(aligned_dir="./aligned_data", output_dir="./participant_excel_reports"):
+def generate_participant_reports(aligned_dir="./aligned_data", output_dir="./outputs/participant_excel_reports"):
     os.makedirs(output_dir, exist_ok=True)
     file_pattern = os.path.join(aligned_dir, "par_*_aligned.csv")
     csv_files = glob.glob(file_pattern)

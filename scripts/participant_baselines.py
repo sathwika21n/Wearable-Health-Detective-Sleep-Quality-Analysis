@@ -6,7 +6,7 @@ the source nightly temperature delta, not an absolute skin-temperature
 measurement.
 
 Run from the project root:
-    python participant_baselines.py
+    python scripts/participant_baselines.py
 """
 
 from __future__ import annotations
@@ -18,10 +18,10 @@ from pathlib import Path
 import pandas as pd
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_SLEEP_FEATURES = PROJECT_DIR / "nightly_sleep_features.csv"
-DEFAULT_PHYSIOLOGY = PROJECT_DIR / "model_ready_sleep_score.csv"
-DEFAULT_OUTPUT = PROJECT_DIR / "participant_baselines.csv"
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_SLEEP_FEATURES = PROJECT_DIR / "outputs" / "nightly_sleep_features.csv"
+DEFAULT_PHYSIOLOGY = PROJECT_DIR / "outputs" / "model_ready_sleep_score.csv"
+DEFAULT_OUTPUT = PROJECT_DIR / "outputs" / "participant_baselines.csv"
 
 BASELINE_METRICS = {
     "total_sleep_time_min": "typical_sleep_time_min",

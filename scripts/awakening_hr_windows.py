@@ -3,9 +3,9 @@ import argparse
 import pandas as pd
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = Path(__file__).resolve().parent.parent
 ALIGNED_DIR = PROJECT_DIR / "aligned_data"
-DEFAULT_OUTPUT = PROJECT_DIR / "awakening_hr_windows.csv"
+DEFAULT_OUTPUT = PROJECT_DIR / "outputs" / "awakening_hr_windows.csv"
 
 VALID_SLEEP_STAGES = ["light", "deep", "rem"]
 EXPECTED_INTERVAL = pd.Timedelta(minutes=5)
@@ -149,6 +149,7 @@ def main():
         ]
     )
 
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     awakening_windows.to_csv(
         args.output,
         index=False

@@ -13,7 +13,7 @@ from charts import show_night_timeline
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
 SAMPLE_PATH = APP_DIR / "sample_sleep_dashboard.csv"
-GENERATED_PATH = PROJECT_DIR / "change_detection_results.csv"
+GENERATED_PATH = PROJECT_DIR / "outputs" / "change_detection_results.csv"
 REQUIRED_COLUMNS = {
     "participant_id", "night_date", "metric", "unit", "observed_value",
     "baseline_value", "difference", "baseline_window", "baseline_nights",

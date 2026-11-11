@@ -7,6 +7,8 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from build_change_detection_table import build_change_table
 
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 def extract_participant_num(filename):
     """Extracts integer participant number for natural sorting (par_1 -> 1, par_24 -> 24)."""
     basename = os.path.basename(filename)
@@ -18,9 +20,9 @@ def extract_participant_num(filename):
 
 def build_multi_window_participant_report(
     aligned_dir=".",
-    awakening_file=os.path.join(os.path.dirname(__file__), "participant_nightly_awakening", "nightly_awakenings.csv"),
-    output_excel="participant_baseline_change_evaluations_multi_window.xlsx",
-    output_csv=os.path.join(os.path.dirname(__file__), "change_detection_results.csv"),
+    awakening_file=os.path.join(PROJECT_DIR, "outputs", "participant_nightly_awakening", "nightly_awakenings.csv"),
+    output_excel=os.path.join(PROJECT_DIR, "outputs", "participant_baseline_change_evaluations_multi_window.xlsx"),
+    output_csv=os.path.join(PROJECT_DIR, "outputs", "change_detection_results.csv"),
 ):
     """
     Builds an Excel workbook with SEPARATE tabs for each participant (par_1 through par_24).

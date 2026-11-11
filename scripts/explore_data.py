@@ -88,7 +88,7 @@ def to_datetime_ms(series):
     return pd.to_datetime(series, unit="ms", utc=True)
 
 
-project_dir = Path(__file__).resolve().parent
+project_dir = Path(__file__).resolve().parent.parent
 base_dir = project_dir / "data" / "ifh_affect"
 aligned_output_dir = project_dir / "aligned_data"
 participant_dirs = sorted(base_dir.glob("par_*"))
@@ -236,9 +236,9 @@ if not nightly_awakenings_df.empty:
     )
 
     # Save full nightly table
-    (project_dir / "participant_nightly_awakening").mkdir(exist_ok=True)  # create output folder
+    (project_dir / "outputs" / "participant_nightly_awakening").mkdir(parents=True, exist_ok=True)  # create output folder
     nightly_awakenings_df.to_csv(
-        project_dir / "participant_nightly_awakening/nightly_awakenings.csv",
+        project_dir / "outputs/participant_nightly_awakening/nightly_awakenings.csv",
         index=False
     )
 

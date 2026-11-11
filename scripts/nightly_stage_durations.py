@@ -10,7 +10,7 @@ EPOCH_MINUTES = EPOCH_SECONDS / 60  # same epoch in minutes
 LABEL_MAP = {1: ("deep", "deep"), 2: ("light", "light"), 3: ("REM", "rem"), 4: ("awake", "awake")}  # level -> (file label, column)
 STAGES = ["deep", "light", "rem", "awake"]  # output stage order
 
-project_dir = Path(__file__).resolve().parent  # folder containing this script
+project_dir = Path(__file__).resolve().parent.parent  # project root
 base_dir = project_dir / "data" / "ifh_affect"  # participant data root
 
 rows = []  # one dict per night
@@ -66,7 +66,7 @@ table = pd.DataFrame(rows)  # rows into a table
 assert np.allclose(table[[f"{s}_min" for s in STAGES]].sum(axis=1), table["total_staged_min"])  # stages sum to total
 assert np.allclose(table["total_staged_min"], table["n_epochs"] * EPOCH_MINUTES)  # total matches label count
 
-out = project_dir / "nightly_stage_durations.csv"  # output file path
+out = project_dir / "outputs" / "nightly_stage_durations.csv"  # output file path
 table.to_csv(out, index=False)  # write nightly table
 print(f"{len(table)} nights, {table['participant'].nunique()} participants -> {out.name}")  # report table size
 print("missing epochs:", int(table["missing_epochs"].sum()))  # report missing labels

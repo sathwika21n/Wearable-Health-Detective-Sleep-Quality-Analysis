@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
-DATA_DIR = Path(__file__).resolve().parent / "data" / "ifh_affect"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "ifh_affect"
 
 #Load every participants sleep csv into one table
 frames = []

@@ -3,7 +3,7 @@
 # values exist and n_nights reports how many nights each result used
 # Use within_r and within_p for inference because they centre each person
 # Pooled p values treat nights as independent which they are not
-# Run python3 nightly_correlations.py to write the correlation_results folder
+# Run python3 scripts/nightly_correlations.py to write outputs/correlation_results
 
 from __future__ import annotations  # Postponed type hints
 
@@ -16,7 +16,7 @@ import pandas as pd  # Tabular data
 from scipy import stats  # Statistical tests
 
 
-PROJECT_DIR = Path(__file__).resolve().parent  # Project root folder
+PROJECT_DIR = Path(__file__).resolve().parent.parent  # Project root folder
 
 SLEEP_FEATURES_FROM_SUMMARY = {  # Oura sleep summary fields
     "total_sleep_time_min": ("total", 1 / 60),  # Seconds to minutes
@@ -234,7 +234,7 @@ def main() -> None:  # Script entry point
     parser = argparse.ArgumentParser(description="Correlate nightly sleep, heart-rate, and temperature features.")  # Argument parser
     parser.add_argument("--data-dir", type=Path, default=PROJECT_DIR / "data" / "ifh_affect")  # Raw data folder
     parser.add_argument("--aligned-dir", type=Path, default=PROJECT_DIR / "aligned_data")  # Aligned data folder
-    parser.add_argument("--output-dir", type=Path, default=PROJECT_DIR / "correlation_results")  # Output folder
+    parser.add_argument("--output-dir", type=Path, default=PROJECT_DIR / "outputs" / "correlation_results")  # Output folder
     args = parser.parse_args()  # Read arguments
 
     nights, log = build_nightly_table(args.data_dir, args.aligned_dir)  # Build nightly table

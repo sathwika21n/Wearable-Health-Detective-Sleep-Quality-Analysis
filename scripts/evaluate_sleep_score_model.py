@@ -5,7 +5,7 @@
 # Ridge regression is the predefined main model and gradient boosting is a comparison
 # The low-score flag is fixed before testing: flag a night when the predicted score is below 70
 # A night counts as truly low when the actual Oura score is below 70 (Oura's pay attention range)
-# Run python3 evaluate_sleep_score_model.py to write the sleep_score_model_results folder
+# Run python3 scripts/evaluate_sleep_score_model.py to write outputs/sleep_score_model_results
 
 from __future__ import annotations  # Postponed type hints
 
@@ -24,9 +24,9 @@ from sklearn.pipeline import make_pipeline  # Imputer and model fitted together
 from sklearn.preprocessing import StandardScaler  # Scale inputs for ridge
 
 
-PROJECT_DIR = Path(__file__).resolve().parent  # Project root folder
-DEFAULT_INPUT = PROJECT_DIR / "model_ready_sleep_score.csv"  # Model-ready table
-DEFAULT_OUTPUT_DIR = PROJECT_DIR / "sleep_score_model_results"  # Results folder
+PROJECT_DIR = Path(__file__).resolve().parent.parent  # Project root folder
+DEFAULT_INPUT = PROJECT_DIR / "outputs" / "model_ready_sleep_score.csv"  # Model-ready table
+DEFAULT_OUTPUT_DIR = PROJECT_DIR / "outputs" / "sleep_score_model_results"  # Results folder
 
 TARGET = "target_sleep_score"  # Oura overall sleep score
 GROUP = "participant_id"  # Split unit

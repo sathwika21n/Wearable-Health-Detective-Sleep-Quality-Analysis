@@ -12,7 +12,7 @@ def extract_participant_num(filename):
     except ValueError:
         return 999
 
-def process_participant_heart_rate(aligned_dir=".", output_file="participant_heart_rate_summary.xlsx"):
+def process_participant_heart_rate(aligned_dir="./aligned_data", output_file="./outputs/participant_heart_rate_summary.xlsx"):
     """
     Summarizes row-level heart rate readings across sleep windows and sleep stages.
     
