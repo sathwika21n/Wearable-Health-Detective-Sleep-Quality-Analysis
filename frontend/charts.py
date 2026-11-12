@@ -22,6 +22,22 @@ HEART_RATE_COLOR = "#e15759"
 TEMPERATURE_COLOR = "#4e79a7"
 DEFAULT_TEMPERATURE_THRESHOLD_C = 0.5
 WINDOW_NIGHT_COUNTS = {"1_day": 1, "7_days": 7, "14_days": 14, "30_days": 30}
+HIGHLIGHT_COLOR = "#edc948"
+# Flagged nightly metrics that have a place on the timeline.
+STAGE_METRICS = {
+    "deep_sleep_min": "Deep",
+    "rem_sleep_min": "REM",
+    "light_sleep_min": "Light",
+    "awake_min": "Awake",
+    "observed_awakenings_count": "Awake",
+}
+HEART_RATE_METRIC = "sleeping_hr_avg_bpm"
+WINDOW_PHRASES = {
+    "1_day": "the previous night",
+    "7_days": "the previous 7 nights",
+    "14_days": "the previous 14 nights",
+    "30_days": "the previous 30 nights",
+}
 
 
 @st.cache_data(show_spinner=False)
@@ -80,8 +96,45 @@ def stage_runs(night: pd.DataFrame) -> pd.DataFrame:
     return runs.reset_index(drop=True)
 
 
-def timeline_chart(night: pd.DataFrame) -> alt.LayerChart:
+def _amount(value, unit: str) -> str:
+    if pd.isna(value):
+        return "—"
+    number = float(value)
+    shown = f"{number:.1f}" if unit in {"°C", "count"} and number % 1 else f"{number:.0f}"
+    return f"{shown} {unit}" if unit and unit != "count" else shown
+
+
+def timeline_highlights(flagged: pd.DataFrame | None) -> dict:
+    """Sort a night's flagged metrics into what the timeline can point at.
+
+    Returns stage rows to highlight, the usual heart rate to draw as a line,
+    and the labels of flagged metrics that have no place on the timeline.
+    """
+    result = {"stages": pd.DataFrame(columns=["stage", "note"]), "heart_rate": None, "elsewhere": []}
+    if flagged is None or flagged.empty:
+        return result
+    stage_notes: dict[str, list[str]] = {}
+    for _, row in flagged.iterrows():
+        metric = str(row["metric"])
+        label = str(row.get("metric_label") or metric.replace("_", " ").capitalize())
+        unit = str(row.get("unit") or "")
+        note = f"{label}: {_amount(row['observed_value'], unit)} vs usual {_amount(row['baseline_value'], unit)}"
+        if metric in STAGE_METRICS:
+            stage_notes.setdefault(STAGE_METRICS[metric], []).append(note)
+        elif metric == HEART_RATE_METRIC and pd.notna(row["baseline_value"]):
+            result["heart_rate"] = {"heart_rate": float(row["baseline_value"]), "note": note}
+        else:
+            result["elsewhere"].append(label)
+    result["stages"] = pd.DataFrame(
+        [{"stage": stage, "note": "; ".join(notes)} for stage, notes in stage_notes.items()],
+        columns=["stage", "note"],
+    )
+    return result
+
+
+def timeline_chart(night: pd.DataFrame, highlights: dict | None = None) -> alt.LayerChart:
     """Layer sleep-stage blocks with a heart-rate line on its own axis."""
+    highlights = highlights or timeline_highlights(None)
     time_axis = alt.X("start:T", title="Time (UTC)", axis=alt.Axis(format="%H:%M"))
     stages = (
         alt.Chart(stage_runs(night))
@@ -103,12 +156,36 @@ def timeline_chart(night: pd.DataFrame) -> alt.LayerChart:
             ],
         )
     )
+    stage_layer = stages
+    if not highlights["stages"].empty:
+        # A pale band across the whole night behind each stage that changed.
+        bands = highlights["stages"].assign(start=night["start"].min(), end=night["end"].max())
+        band = (
+            alt.Chart(bands)
+            .mark_rect(color=HIGHLIGHT_COLOR, opacity=0.35)
+            .encode(
+                x=time_axis,
+                x2="end:T",
+                y=alt.Y("stage:N", sort=STAGE_ORDER, title="Sleep stage"),
+                tooltip=[alt.Tooltip("note:N", title="Flagged")],
+            )
+        )
+        stage_layer = band + stages
+    heart_rate_values = list(night["heart_rate"].dropna())
+    if highlights["heart_rate"] is not None:
+        heart_rate_values.append(highlights["heart_rate"]["heart_rate"])
+    # A few bpm of room so a usual-heart-rate line never sits on the chart's edge.
+    heart_rate_scale = (
+        alt.Scale(domain=[min(heart_rate_values) - 3, max(heart_rate_values) + 3], nice=True)
+        if heart_rate_values
+        else alt.Scale(zero=False)
+    )
     heart_rate_data = alt.Chart(night.dropna(subset=["heart_rate"])).encode(
         x=time_axis,
         y=alt.Y(
             "heart_rate:Q",
             title="Heart rate (bpm)",
-            scale=alt.Scale(zero=False),
+            scale=heart_rate_scale,
             axis=alt.Axis(titleColor=HEART_RATE_COLOR, orient="right"),
         ),
     )
@@ -121,8 +198,17 @@ def timeline_chart(night: pd.DataFrame) -> alt.LayerChart:
             alt.Tooltip("stage:N", title="Stage"),
         ],
     )
+    heart_rate_layer = heart_rate_line + heart_rate_points
+    if highlights["heart_rate"] is not None:
+        usual = alt.Chart(pd.DataFrame([highlights["heart_rate"]])).mark_rule(
+            color=HEART_RATE_COLOR, strokeDash=[6, 4], strokeWidth=2
+        ).encode(
+            y=alt.Y("heart_rate:Q"),
+            tooltip=[alt.Tooltip("note:N", title="Flagged")],
+        )
+        heart_rate_layer = heart_rate_layer + usual
     return (
-        alt.layer(stages, heart_rate_line + heart_rate_points)
+        alt.layer(stage_layer, heart_rate_layer)
         .resolve_scale(y="independent")
         .properties(height=280)
     )
@@ -264,8 +350,12 @@ def show_temperature_trend(
     st.altair_chart(temperature_trend_chart(temperature, threshold), use_container_width=True)
 
 
-def show_night_timeline(participant_id: str, night_date: str) -> None:
-    """Render the timeline section for the selected participant and night."""
+def show_night_timeline(participant_id: str, night_date: str, flagged: pd.DataFrame | None = None) -> None:
+    """Render the timeline section for the selected participant and night.
+
+    flagged holds the night's change rows; the stages and heart rate they
+    refer to are pointed out on the chart.
+    """
     st.markdown("### Night timeline")
     signals = load_participant_signals(str(participant_id))
     if signals is None:
@@ -279,4 +369,20 @@ def show_night_timeline(participant_id: str, night_date: str) -> None:
         "Colored blocks show the sleep stage through the night (5-minute resolution); the red line is heart rate. "
         "Hover for times and values. Gaps mean no data was recorded."
     )
-    st.altair_chart(timeline_chart(night), use_container_width=True)
+    highlights = timeline_highlights(flagged)
+    pointed_out = list(highlights["stages"]["stage"])
+    if highlights["heart_rate"] is not None:
+        pointed_out.append("heart rate")
+    if pointed_out:
+        window = str(flagged["baseline_window"].iloc[0]) if "baseline_window" in flagged else ""
+        compared = WINDOW_PHRASES.get(window, "the baseline")
+        parts = [f"the {stage} row" for stage in highlights["stages"]["stage"]]
+        if highlights["heart_rate"] is not None:
+            parts.append("the dashed line (usual heart rate)")
+        st.caption(
+            f"Highlighted: {', '.join(parts)}, because these changed compared with {compared}. "
+            "Hover over a highlight for the values."
+        )
+    if highlights["elsewhere"]:
+        st.caption(f"Also flagged this night, shown in the cards below: {', '.join(highlights['elsewhere'])}.")
+    st.altair_chart(timeline_chart(night, highlights), use_container_width=True)
