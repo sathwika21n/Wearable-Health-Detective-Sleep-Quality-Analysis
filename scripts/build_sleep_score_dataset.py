@@ -7,7 +7,7 @@ Score (duration, stages, efficiency, latency, restfulness, and timing) are
 intentionally excluded.
 
 Run from the project root:
-    python3 build_sleep_score_dataset.py
+    python3 scripts/build_sleep_score_dataset.py
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from pathlib import Path
 import pandas as pd
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_DIR = PROJECT_DIR / "data" / "ifh_affect"
-DEFAULT_OUTPUT = PROJECT_DIR / "model_ready_sleep_score.csv"
+DEFAULT_OUTPUT = PROJECT_DIR / "outputs" / "model_ready_sleep_score.csv"
 
 TARGET_COLUMN = "target_sleep_score"
 # Conservative feature whitelist: physiological measurements not used as
