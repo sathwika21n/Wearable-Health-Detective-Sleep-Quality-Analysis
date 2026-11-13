@@ -10,6 +10,7 @@ import streamlit as st
 from ai_insights import get_summary
 from charts import show_night_timeline, show_temperature_trend
 from insights import DISCLAIMER, night_facts
+from report import build_participant_report, report_filename
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -189,6 +190,21 @@ if not dates:
     st.warning("No valid night dates are available for this participant.")
     st.stop()
 
+range_start = pd.Timestamp(min(dates)).date()
+range_end = pd.Timestamp(max(dates)).date()
+with st.sidebar:
+    report_range = st.date_input(
+        "PDF report date range",
+        value=(range_start, range_end),
+        min_value=range_start,
+        max_value=range_end,
+        help="Choose the nights included in the shareable participant summary.",
+    )
+if isinstance(report_range, tuple) and len(report_range) == 2:
+    report_start, report_end = report_range
+else:
+    report_start = report_end = report_range
+
 with st.sidebar:
     night = st.selectbox("Night", dates, format_func=lambda value: pd.Timestamp(value).strftime("%b %d, %Y"))
 
@@ -196,6 +212,27 @@ selected = participant_data.loc[participant_data["night_date"].eq(night)].copy()
 if selected["metric"].duplicated(keep=False).any():
     st.error("This participant-night has duplicate metric rows. Keep one row per metric in the input.")
     st.stop()
+
+try:
+    pdf_bytes = build_participant_report(
+        participant_data,
+        participant,
+        baseline_window,
+        report_start,
+        report_end,
+        METRIC_LABELS,
+    )
+    with st.sidebar:
+        st.download_button(
+            "Download participant report (PDF)",
+            data=pdf_bytes,
+            file_name=report_filename(participant, report_start, report_end),
+            mime="application/pdf",
+            use_container_width=True,
+        )
+except ValueError as exc:
+    with st.sidebar:
+        st.warning(f"PDF report unavailable: {exc}")
 
 st.subheader(f"Participant {participant} · Night of {pd.Timestamp(night).strftime('%B %d, %Y')}")
 st.caption("Units appear beside each observed value. Differences are observed minus baseline.")
