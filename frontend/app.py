@@ -210,7 +210,7 @@ with st.container(border=True):
     st.caption(f"{insight_source} summary. {DISCLAIMER}")
 
 show_temperature_trend(participant_data, participant, baseline_window, night)
-show_night_timeline(participant, night)
+show_night_timeline(participant, night, selected.loc[selected["status"].eq("change")])
 
 changes = selected.loc[selected["status"].eq("change")]
 unavailable = selected[
