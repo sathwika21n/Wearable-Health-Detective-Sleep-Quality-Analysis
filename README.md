@@ -236,6 +236,24 @@ now writes the same CSV after saving the workbook. The
 dashboard sidebar lets users select a participant, baseline window, and night,
 or upload another CSV in the same format. If the generated CSV is absent, the
 page falls back to `frontend/sample_sleep_dashboard.csv`.
+The dashboard tabs separate the overview, metric details, night timeline,
+temperature trend, and metric comparisons. The sidebar selections apply to all tabs.
+
+The **Compare nightly metrics** section plots paired observations from all
+available nights for the selected participant and baseline window, using the
+current dashboard data source (including uploads or sample data). Choose a
+comparison to see its axes, number of paired nights, and, when there are at
+least three pairs and both metrics vary, the within-participant Pearson correlation. Missing
+measurements are excluded; correlations describe associations, not causes.
+The orange diamond highlights the selected night when both values are present;
+the dashed line summarizes the straight-line pattern across paired nights.
+For generated project results, the temperature trend uses
+`outputs/participant_baselines.csv` when available; uploaded and sample data
+use their own supplied baselines.
+Its red diamonds mark temperature changes flagged by the selected window's
+rule; the shaded temperature band is a visual reference and is not
+necessarily that rule. The selected night's status and flag details appear
+above the chart.
 
 The input is **long format**, with one row per participant, night, metric, and
 baseline window. Required columns are:
