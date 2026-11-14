@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from ai_insights import get_summary
-from charts import show_night_timeline, show_temperature_trend
+from charts import show_metric_comparison, show_night_timeline, show_temperature_trend
 from insights import DISCLAIMER, night_facts
 
 
@@ -132,7 +132,11 @@ def show_metric_card(row: pd.Series) -> None:
 
 st.set_page_config(page_title="Sleep Detective Dashboard", page_icon="🌙", layout="wide")
 st.title("🌙 Sleep Detective Dashboard")
-st.caption("Explore nightly sleep metrics and personal baseline changes.")
+st.markdown(
+    "This dashboard is for people exploring their wearable sleep data. A **change** means a "
+    "measurement crossed a rule when compared with the person's previous nights. "
+    "Flags are statistical or rule-based observations, not diagnoses or medical advice."
+)
 
 with st.sidebar:
     st.header("Data source")
@@ -200,100 +204,116 @@ if selected["metric"].duplicated(keep=False).any():
 st.subheader(f"Participant {participant} · Night of {pd.Timestamp(night).strftime('%B %d, %Y')}")
 st.caption("Units appear beside each observed value. Differences are observed minus baseline.")
 
-facts = night_facts(selected, METRIC_LABELS)
-night_summary, insight_source = get_summary(facts, use_ai=use_ai)
-with st.container(border=True):
-    st.markdown("### What stood out")
-    st.markdown(f"**{night_summary.headline}**")
-    for sentence in night_summary.details:
-        st.markdown(f"- {sentence}")
-    st.caption(f"{insight_source} summary. {DISCLAIMER}")
-
-show_temperature_trend(participant_data, participant, baseline_window, night)
-show_night_timeline(participant, night)
-
 changes = selected.loc[selected["status"].eq("change")]
 unavailable = selected[
     selected["status"].isin({"missing", "insufficient_history"})
     | selected["observed_value"].isna()
 ]
-summary_cols = st.columns(3)
-summary_cols[0].metric("Metrics shown", len(selected))
-summary_cols[1].metric("Changes detected", len(changes))
-summary_cols[2].metric("Data gaps / short history", len(unavailable))
+overview_tab, metrics_tab, timeline_tab, temperature_tab, comparison_tab = st.tabs([
+    "Overview", "Metric details", "Night timeline", "Temperature trend", "Compare metrics",
+])
 
-if selected.empty:
-    st.warning("No metrics are available for the selected night.")
-else:
-    preferred_order = list(METRIC_LABELS)
-    order = {name: index for index, name in enumerate(preferred_order)}
-    selected["_order"] = selected["metric"].map(order).fillna(len(order))
-    selected = selected.sort_values(["_order", "metric"]).drop(columns="_order")
+with overview_tab:
+    facts = night_facts(selected, METRIC_LABELS)
+    night_summary, insight_source = get_summary(facts, use_ai=use_ai)
+    with st.container(border=True):
+        st.markdown("### What stood out")
+        st.markdown(f"**{night_summary.headline}**")
+        for sentence in night_summary.details:
+            st.markdown(f"- {sentence}")
+        st.caption(f"{insight_source} summary. {DISCLAIMER}")
 
-    changed_metrics = selected.loc[selected["status"].eq("change")]
-    normal_metrics = selected.loc[selected["status"].eq("normal")]
-    unavailable_metrics = selected.loc[
-        selected["status"].isin({"missing", "insufficient_history"})
-        | selected["observed_value"].isna()
-    ]
+    summary_cols = st.columns(3)
+    summary_cols[0].metric("Metrics shown", len(selected))
+    summary_cols[1].metric("Changes detected", len(changes))
+    summary_cols[2].metric("Data gaps / short history", len(unavailable))
+    st.caption("Explore the other tabs for individual metrics, the night timeline, temperature, and comparisons.")
 
-    def show_metric_group(title: str, explanation: str, frame: pd.DataFrame, empty_message: str) -> None:
-        st.markdown(f"### {title}")
-        st.caption(explanation)
-        if frame.empty:
-            st.info(empty_message)
-            return
-        for start in range(0, len(frame), 4):
-            cards = st.columns(4)
-            for card, (_, row) in zip(cards, frame.iloc[start:start + 4].iterrows()):
-                with card:
-                    show_metric_card(row)
+with metrics_tab:
+    if selected.empty:
+        st.warning("No metrics are available for the selected night.")
+    else:
+        preferred_order = list(METRIC_LABELS)
+        order = {name: index for index, name in enumerate(preferred_order)}
+        selected["_order"] = selected["metric"].map(order).fillna(len(order))
+        selected = selected.sort_values(["_order", "metric"]).drop(columns="_order")
 
-    show_metric_group(
-        "Changes to review",
-        "These measurements crossed the selected change-detection rule and are the highest-priority items to review.",
-        changed_metrics,
-        "No measurements crossed the change-detection rule for this night.",
+        changed_metrics = selected.loc[selected["status"].eq("change")]
+        normal_metrics = selected.loc[selected["status"].eq("normal")]
+        unavailable_metrics = selected.loc[
+            selected["status"].isin({"missing", "insufficient_history"})
+            | selected["observed_value"].isna()
+        ]
+
+        def show_metric_group(title: str, explanation: str, frame: pd.DataFrame, empty_message: str) -> None:
+            st.markdown(f"### {title}")
+            st.caption(explanation)
+            if frame.empty:
+                st.info(empty_message)
+                return
+            for start in range(0, len(frame), 4):
+                cards = st.columns(4)
+                for card, (_, row) in zip(cards, frame.iloc[start:start + 4].iterrows()):
+                    with card:
+                        show_metric_card(row)
+
+        show_metric_group(
+            "Changes to review",
+            "These measurements crossed the selected change-detection rule and are the highest-priority items to review.",
+            changed_metrics,
+            "No measurements crossed the change-detection rule for this night.",
+        )
+        show_metric_group(
+            "Within the usual range",
+            "These measurements were available and did not cross the selected change-detection rule.",
+            normal_metrics,
+            "No measurements are available in this group.",
+        )
+        show_metric_group(
+            "Missing data or not enough history",
+            "These measurements could not be compared reliably because a value is missing or there are too few prior nights.",
+            unavailable_metrics,
+            "All displayed measurements have enough data for a comparison.",
+        )
+
+        if not changed_metrics.empty:
+            with st.expander("Technical change-detection details"):
+                st.caption("This table is for reviewing the values and rules behind the change flags.")
+                details = changed_metrics.copy()
+                details["threshold"] = details.apply(
+                    lambda row: (
+                        f"|difference| ≥ {format_value(row['threshold_value'], row['unit'])}"
+                        if row["threshold_type"] == "absolute_difference" and pd.notna(row["threshold_value"])
+                        else f"|z-score| ≥ {row['threshold_value']:g}"
+                        if row["threshold_type"] == "absolute_z_score" and pd.notna(row["threshold_value"])
+                        else "—"
+                    ),
+                    axis=1,
+                )
+                details["metric"] = details["metric"].map(METRIC_LABELS).fillna(details["metric"])
+                details = details.rename(columns={
+                    "metric": "Metric", "observed_value": "Observed", "baseline_value": "Baseline",
+                    "difference": "Difference", "unit": "Unit", "baseline_window": "Baseline window",
+                    "threshold": "Applied threshold", "baseline_std": "Baseline SD",
+                    "z_score": "Z-score", "message": "Details",
+                })
+                st.dataframe(
+                    details[[
+                        "Metric", "Observed", "Baseline", "Difference", "Unit", "Baseline window",
+                        "Applied threshold", "Baseline SD", "Z-score", "Details",
+                    ]],
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+with timeline_tab:
+    show_night_timeline(participant, night)
+
+with temperature_tab:
+    show_temperature_trend(
+        participant_data, participant, baseline_window, night,
+        use_participant_baselines=uploaded is None and GENERATED_PATH.exists(),
     )
-    show_metric_group(
-        "Within the usual range",
-        "These measurements were available and did not cross the selected change-detection rule.",
-        normal_metrics,
-        "No measurements are available in this group.",
-    )
-    show_metric_group(
-        "Missing data or not enough history",
-        "These measurements could not be compared reliably because a value is missing or there are too few prior nights.",
-        unavailable_metrics,
-        "All displayed measurements have enough data for a comparison.",
-    )
 
-    if not changed_metrics.empty:
-        with st.expander("Technical change-detection details"):
-            st.caption("This table is for reviewing the values and rules behind the change flags.")
-            details = changed_metrics.copy()
-            details["threshold"] = details.apply(
-                lambda row: (
-                    f"|difference| ≥ {format_value(row['threshold_value'], row['unit'])}"
-                    if row["threshold_type"] == "absolute_difference" and pd.notna(row["threshold_value"])
-                    else f"|z-score| ≥ {row['threshold_value']:g}"
-                    if row["threshold_type"] == "absolute_z_score" and pd.notna(row["threshold_value"])
-                    else "—"
-                ),
-                axis=1,
-            )
-            details["metric"] = details["metric"].map(METRIC_LABELS).fillna(details["metric"])
-            details = details.rename(columns={
-                "metric": "Metric", "observed_value": "Observed", "baseline_value": "Baseline",
-                "difference": "Difference", "unit": "Unit", "baseline_window": "Baseline window",
-                "threshold": "Applied threshold", "baseline_std": "Baseline SD",
-                "z_score": "Z-score", "message": "Details",
-            })
-            st.dataframe(
-                details[[
-                    "Metric", "Observed", "Baseline", "Difference", "Unit", "Baseline window",
-                    "Applied threshold", "Baseline SD", "Z-score", "Details",
-                ]],
-                hide_index=True,
-                use_container_width=True,
-            )
+with comparison_tab:
+    show_metric_comparison(participant_data, night)
