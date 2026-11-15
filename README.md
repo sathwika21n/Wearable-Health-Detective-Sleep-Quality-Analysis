@@ -220,10 +220,10 @@ by night) if the goal is to estimate performance on previously unseen users.
 ### Streamlit sleep dashboard
 
 Generate the dashboard-ready table from `aligned_data/`, then run the dashboard
-from the project root. If Streamlit or pandas is not installed, install it first:
+from the project root. If dependencies are missing, install them with:
 
 ```bash
-python3 -m pip install streamlit pandas
+python3 -m pip install -r requirements.txt
 python3 scripts/build_change_detection_table.py
 streamlit run frontend/app.py
 ```
@@ -236,6 +236,14 @@ now writes the same CSV after saving the workbook. The
 dashboard sidebar lets users select a participant, baseline window, and night,
 or upload another CSV in the same format. If the generated CSV is absent, the
 page falls back to `frontend/sample_sleep_dashboard.csv`.
+
+The dashboard can export a participant PDF summary from the sidebar. Choose a
+participant, baseline window, and report date range, then select **Download
+participant report (PDF)**. The report includes first-to-latest metric summaries,
+nightly trend charts, detected changes with their supplied baseline values and
+thresholds, and missing-data or short-history records. It reports supplied flags
+without recalculating them and describes patterns without causal or diagnostic
+claims. The PDF export uses ReportLab, included in `requirements.txt`.
 
 The input is **long format**, with one row per participant, night, metric, and
 baseline window. Required columns are:
