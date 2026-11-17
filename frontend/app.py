@@ -188,7 +188,9 @@ st.subheader(f"Participant {participant} · Night of {pd.Timestamp(night).strfti
 st.caption("Units appear beside each observed value. Differences are observed minus baseline.")
 
 facts = night_facts(selected, METRIC_LABELS)
-night_summary, insight_source = get_summary(facts, use_ai=use_ai)
+night_summary, insight_source = get_summary(
+    facts, use_ai=use_ai, history=participant_data, night=night
+)
 with st.container(border=True):
     st.markdown("### What stood out")
     st.markdown(f"**{night_summary.headline}**")

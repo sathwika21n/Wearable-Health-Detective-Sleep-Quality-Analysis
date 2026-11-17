@@ -1,33 +1,47 @@
-"""Optional AI-generated sleep insights with rule-based fallback."""
+"""Optional AI-generated sleep feedback with a rule-based fallback.
+
+The AI writes three kinds of feedback, all from results the dashboard has already
+computed:
+
+1. This night: what changed compared with the person's own baseline, and which
+   changes happened on the same night.
+2. Recent nights: how this night fits the participant's previous nights.
+3. Habit tips: general, non-medical sleep habits, picked by the model from the
+   fixed list in ``HABIT_TIPS``. The model only chooses tip ids and gives a short
+   reason; the tip wording itself always comes from this file.
+
+The reply is structured JSON. It is checked before it is shown (no numbers that
+are not in the input, no diagnosis or cause-and-effect wording, no recent-night
+claims without history, known tip ids only). Anything that fails a check, times
+out or errors falls back to the rule-based summary, so the dashboard never breaks.
+
+``get_summary(facts, use_ai)`` keeps the signature app.py already uses. Passing
+``history`` (the participant's rows for the selected baseline window) and
+``night`` turns on the recent-nights feedback.
+"""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import math
 import os
-from dataclasses import asdict
+import re
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from pathlib import Path
 
+import pandas as pd
 from dotenv import load_dotenv
 
-from insights import Fact, NightSummary, summarize
+from insights import WINDOW_PHRASES, Fact, NightSummary, summarize
 
 
-# ---------------------------------------------------------
-# Load environment variables
-# ---------------------------------------------------------
-
-# Project structure:
-#
-# project/
-# ├── .env
-# ├── frontend/
-# │   ├── app.py
-# │   ├── ai_insights.py
-# │   └── insights.py
-#
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-ENV_PATH = PROJECT_DIR / ".env"
+load_dotenv(PROJECT_DIR / ".env")
 
-load_dotenv(ENV_PATH)
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------
@@ -36,11 +50,118 @@ load_dotenv(ENV_PATH)
 
 DEFAULT_MODEL = "gpt-6-luna"
 DEFAULT_TIMEOUT_SECONDS = 8.0
+MAX_OUTPUT_TOKENS = 700
+MAX_HISTORY_NIGHTS = 7
+CACHE_SIZE = 64
+
+MAX_THIS_NIGHT = 4
+MAX_RECENT_NIGHTS = 3
+MAX_HABIT_TIPS = 3
+MAX_SENTENCE_CHARS = 320
+
+# General sleep habits only. The model picks ids from this list; it never writes
+# its own advice, so the dashboard can't show medical or treatment suggestions.
+HABIT_TIPS = {
+    "consistent_schedule": "Keep a similar bedtime and wake-up time every day, weekends included.",
+    "wind_down": "Give yourself 30 to 60 minutes to wind down before bed, away from bright screens.",
+    "caffeine_timing": "Skip caffeine in the afternoon and evening.",
+    "alcohol_timing": "Avoid alcohol in the few hours before bed.",
+    "late_meals": "Avoid large meals close to bedtime.",
+    "bedroom_environment": "Keep the bedroom cool, dark and quiet.",
+    "daylight_and_activity": "Get daylight and some physical activity earlier in the day.",
+    "time_in_bed": "Leave enough time in bed for the amount of sleep you get on your good nights.",
+}
+HABIT_TIP_NOTE = "Habit ideas are general sleep habits, not medical advice."
+
+# Words that would make the feedback sound like a diagnosis, treatment or a
+# cause-and-effect claim. Matching is case-insensitive on word starts.
+BANNED_PATTERNS = [
+    r"\bdiagnos", r"\bdisorder", r"\binsomnia", r"\bapnea", r"\bapnoea", r"\bdisease",
+    r"\billness", r"\bsymptom", r"\bmedicat", r"\bprescri", r"\btreat", r"\bcure",
+    r"\bsupplement", r"\bmelatonin", r"\bcaused\b", r"\bcauses\b", r"\bbecause of\b",
+    r"\bdue to\b", r"\bled to\b", r"\bleads to\b", r"\bresult(?:s|ed)? in\b",
+]
+_BANNED_RE = re.compile("|".join(BANNED_PATTERNS), re.IGNORECASE)
+_NUMBER_RE = re.compile(r"(?<![\w.])[-+]?\d+(?:\.\d+)?")
+_PERCENT_RE = re.compile(r"\d\s*(?:%|percent\b)", re.IGNORECASE)
+
+# Numbers this small are fine in prose ("2 of 7 nights", "3 measurements").
+FREE_NUMBERS = set(range(0, 11))
+
+FEEDBACK_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "this_night": {
+            "type": "array",
+            "description": "1 to 4 short sentences about the selected night compared with the baseline.",
+            "items": {"type": "string"},
+        },
+        "recent_nights": {
+            "type": "array",
+            "description": "0 to 3 short sentences about how this night fits the recent nights. Empty if no recent nights are given.",
+            "items": {"type": "string"},
+        },
+        "habit_tips": {
+            "type": "array",
+            "description": "0 to 3 habit tips chosen from the allowed tip ids.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "tip_id": {"type": "string", "enum": sorted(HABIT_TIPS)},
+                    "reason": {
+                        "type": "string",
+                        "description": "One short clause linking the tip to this night's pattern.",
+                    },
+                },
+                "required": ["tip_id", "reason"],
+            },
+        },
+    },
+    "required": ["this_night", "recent_nights", "habit_tips"],
+}
+
+INSTRUCTIONS = f"""
+You explain one person's wearable sleep results in plain language.
+Use ONLY the JSON data you are given. It compares one night with the person's own
+baseline and, when present, lists their previous nights (oldest first).
+
+Write three parts:
+1. this_night: 1 to 4 short sentences on what stood out this night and which
+   changes happened on the same night. If nothing changed, say so briefly.
+2. recent_nights: 0 to 3 short sentences on how this night fits the previous
+   nights (for example a run of short nights, or a value back near its usual
+   level). Leave it empty when recent_nights is missing or empty in the data.
+3. habit_tips: 0 to 3 tip ids from this list that fit the pattern, each with a
+   short reason. Pick none if nothing stood out.
+{json.dumps(HABIT_TIPS, indent=2)}
+
+Rules:
+- Never diagnose, name a condition, or mention medicine, supplements or treatment.
+- Never say one measurement caused another; say they happened on the same night.
+- Only use numbers that appear in the data. Do not calculate new numbers,
+  percentages or averages. Minutes may be written as hours and minutes.
+- Speak to the person as "you". Keep every sentence under 40 words.
+""".strip()
 
 
 # ---------------------------------------------------------
-# Check whether AI is available
+# Data
 # ---------------------------------------------------------
+
+@dataclass
+class AIFeedback:
+    """The model's reply after parsing."""
+
+    this_night: list[str] = field(default_factory=list)
+    recent_nights: list[str] = field(default_factory=list)
+    habit_tips: list[tuple[str, str]] = field(default_factory=list)
+
+
+class FeedbackError(ValueError):
+    """The AI reply can't be shown; the caller falls back to rule-based text."""
+
 
 def ai_available() -> bool:
     """Return True when an OpenAI API key is available."""
@@ -48,104 +169,281 @@ def ai_available() -> bool:
 
 
 # ---------------------------------------------------------
-# Convert nightly facts into text for the AI prompt
+# Input for the model
 # ---------------------------------------------------------
 
-def _facts_to_text(facts: list[Fact]) -> str:
-    """Convert Fact objects into a simple text representation."""
+def _round(value: float | None, unit: str) -> float | int | None:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    if unit in {"min", "count"}:
+        return int(round(value))
+    if unit == "°C":
+        return round(float(value), 2)
+    return round(float(value), 1)
 
-    if not facts:
-        return "No nightly facts are available."
 
-    lines = []
+def _fact_entry(fact: Fact) -> dict:
+    entry = {
+        "metric": fact.label,
+        "unit": fact.unit,
+        "status": fact.status,
+        "observed": _round(fact.observed, fact.unit),
+        "baseline": _round(fact.baseline, fact.unit),
+        "difference": _round(fact.difference, fact.unit),
+    }
+    if fact.z_score is not None:
+        entry["z_score"] = round(fact.z_score, 1)
+    if fact.status == "insufficient_history":
+        entry["prior_nights"] = fact.baseline_nights
+        entry["nights_needed"] = fact.minimum_nights
+    return {key: value for key, value in entry.items() if value is not None and value != ""}
 
+
+def _recent_nights(facts: list[Fact], history: pd.DataFrame | None, night: str | None, max_nights: int) -> dict | None:
+    """Previous nights for each metric on this night, oldest first, without dates or ids."""
+    if history is None or history.empty or night is None:
+        return None
+    frame = history.copy()
+    frame["night_date"] = pd.to_datetime(frame["night_date"], errors="coerce")
+    selected = pd.Timestamp(night)
+    prior = frame.loc[frame["night_date"].lt(selected)]
+    nights = sorted(prior["night_date"].dropna().unique())[-max_nights:]
+    if not nights:
+        return None
+    prior = prior.loc[prior["night_date"].isin(nights)]
+
+    metrics = []
     for fact in facts:
-        # Fact is a dataclass, so this safely converts all of
-        # its existing fields without depending on exact field names.
-        fact_data = asdict(fact)
+        rows = prior.loc[prior["metric"].astype(str).eq(fact.metric)].sort_values("night_date")
+        values = [_round(v, fact.unit) for v in pd.to_numeric(rows["observed_value"], errors="coerce")]
+        present = [v for v in values if v is not None]
+        if not present:
+            continue
+        metrics.append({
+            "metric": fact.label,
+            "unit": fact.unit,
+            "previous_values": values,
+            "previous_average": _round(sum(present) / len(present), fact.unit),
+            "this_night": _round(fact.observed, fact.unit),
+            "previous_nights_flagged": int(rows["status"].astype(str).eq("change").sum()),
+        })
+    if not metrics:
+        return None
+    return {"nights_included": len(nights), "metrics": metrics}
 
-        pieces = []
 
-        for key, value in fact_data.items():
-            pieces.append(f"{key}={value}")
-
-        lines.append("- " + ", ".join(pieces))
-
-    return "\n".join(lines)
+def build_feedback_payload(
+    facts: list[Fact],
+    history: pd.DataFrame | None = None,
+    night: str | None = None,
+    max_nights: int = MAX_HISTORY_NIGHTS,
+) -> dict:
+    """The compact JSON the model sees. Holds no participant id and no dates."""
+    window = facts[0].window if facts else ""
+    payload = {
+        "compared_with": WINDOW_PHRASES.get(window, "recent nights"),
+        "rule_based_headline": summarize(facts).headline,
+        "this_night": [_fact_entry(fact) for fact in facts],
+    }
+    recent = _recent_nights(facts, history, night, max_nights)
+    if recent:
+        payload["recent_nights"] = recent
+    return payload
 
 
 # ---------------------------------------------------------
-# Call OpenAI
+# Checking the reply
 # ---------------------------------------------------------
+
+def _payload_numbers(payload) -> set[float]:
+    """Every number in the payload, plus the forms prose may use for it."""
+    numbers: set[float] = set()
+
+    def add(value: float, unit: str | None) -> None:
+        numbers.update({value, abs(value)})
+        if unit == "min":
+            minutes = int(round(abs(value)))
+            hours, rest = divmod(minutes, 60)
+            numbers.update({hours, rest, round(minutes / 60, 1)})
+
+    def walk(node, unit=None) -> None:
+        if isinstance(node, dict):
+            unit = node.get("unit", unit)
+            for value in node.values():
+                walk(value, unit)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, unit)
+        elif isinstance(node, bool):
+            return
+        elif isinstance(node, (int, float)):
+            add(float(node), unit)
+        elif isinstance(node, str):
+            for match in _NUMBER_RE.findall(node):
+                add(float(match), None)
+
+    walk(payload)
+    return numbers
+
+
+def _number_allowed(number: float, allowed: set[float]) -> bool:
+    if abs(number) in FREE_NUMBERS:
+        return True
+    return any(abs(abs(number) - abs(value)) <= max(0.051, 0.005 * abs(value)) for value in allowed)
+
+
+def validate_feedback(feedback: AIFeedback, payload: dict) -> list[str]:
+    """Reasons the reply can't be shown; an empty list means it's fine."""
+    problems = []
+    if not any(sentence.strip() for sentence in feedback.this_night):
+        problems.append("no sentences about this night")
+    if len(feedback.this_night) > MAX_THIS_NIGHT:
+        problems.append("too many sentences about this night")
+    if len(feedback.recent_nights) > MAX_RECENT_NIGHTS:
+        problems.append("too many sentences about recent nights")
+    if feedback.recent_nights and "recent_nights" not in payload:
+        problems.append("recent-night claims without recent-night data")
+    if len(feedback.habit_tips) > MAX_HABIT_TIPS:
+        problems.append("too many habit tips")
+    unknown = [tip for tip, _ in feedback.habit_tips if tip not in HABIT_TIPS]
+    if unknown:
+        problems.append(f"unknown habit tip ids: {', '.join(unknown)}")
+
+    allowed = _payload_numbers(payload)
+    texts = feedback.this_night + feedback.recent_nights + [reason for _, reason in feedback.habit_tips]
+    for text in texts:
+        if len(text) > MAX_SENTENCE_CHARS:
+            problems.append("a sentence is too long")
+        banned = _BANNED_RE.search(text)
+        if banned:
+            problems.append(f"banned wording: {banned.group(0)!r}")
+        if _PERCENT_RE.search(text):
+            # The payload has no percentages, so any percentage is a new calculation.
+            problems.append("percentages are not in the data")
+        invented = [n for n in _NUMBER_RE.findall(text) if not _number_allowed(float(n), allowed)]
+        if invented:
+            problems.append(f"numbers not in the data: {', '.join(invented)}")
+    return problems
+
+
+def parse_feedback(text: str) -> AIFeedback:
+    """Turn the model's JSON text into AIFeedback, or raise FeedbackError."""
+    try:
+        data = json.loads(text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise FeedbackError(f"reply is not JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise FeedbackError("reply is not a JSON object")
+
+    def strings(key: str) -> list[str]:
+        value = data.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise FeedbackError(f"{key} must be a list of strings")
+        return [item.strip() for item in value if item.strip()]
+
+    tips = data.get("habit_tips", [])
+    if not isinstance(tips, list):
+        raise FeedbackError("habit_tips must be a list")
+    parsed_tips = []
+    for tip in tips:
+        if not isinstance(tip, dict) or not isinstance(tip.get("tip_id"), str):
+            raise FeedbackError("each habit tip needs a tip_id")
+        parsed_tips.append((tip["tip_id"], str(tip.get("reason", "")).strip()))
+    return AIFeedback(strings("this_night"), strings("recent_nights"), parsed_tips)
+
+
+def to_night_summary(feedback: AIFeedback, headline: str) -> NightSummary:
+    """Fit the AI feedback into the panel's headline-plus-bullets format."""
+    details = list(feedback.this_night)
+    details += [f"Recent nights: {sentence}" for sentence in feedback.recent_nights]
+    for tip_id, reason in feedback.habit_tips:
+        tip = HABIT_TIPS[tip_id]
+        details.append(f"Habit to try: {tip} {reason}" if reason else f"Habit to try: {tip}")
+    if feedback.habit_tips:
+        details.append(HABIT_TIP_NOTE)
+    return NightSummary(headline=headline, details=details)
+
+
+# ---------------------------------------------------------
+# Calling OpenAI (cached)
+# ---------------------------------------------------------
+
+_cache: "OrderedDict[str, AIFeedback]" = OrderedDict()
+
+
+def clear_cache() -> None:
+    _cache.clear()
+
+
+def _cache_key(payload: dict, model: str) -> str:
+    raw = json.dumps({"model": model, "payload": payload}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _make_client(timeout_seconds: float):
+    from openai import OpenAI
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not available.")
+    return OpenAI(api_key=api_key, timeout=timeout_seconds)
+
+
+def generate_ai_feedback(
+    payload: dict,
+    client=None,
+    model: str | None = None,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+) -> AIFeedback:
+    """Ask the model for feedback on the payload. Raises on any failure.
+
+    Replies that pass the checks are cached in this process, so Streamlit reruns
+    (every widget change) don't call the API again for the same night.
+    """
+    model = model or os.getenv("OPENAI_MODEL") or DEFAULT_MODEL
+    key = _cache_key(payload, model)
+    if key in _cache:
+        _cache.move_to_end(key)
+        return _cache[key]
+
+    client = client or _make_client(timeout_seconds)
+    response = client.responses.create(
+        model=model,
+        instructions=INSTRUCTIONS,
+        input=json.dumps(payload, ensure_ascii=False),
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "sleep_feedback",
+                "schema": FEEDBACK_SCHEMA,
+                "strict": True,
+            }
+        },
+        max_output_tokens=MAX_OUTPUT_TOKENS,
+    )
+    feedback = parse_feedback((getattr(response, "output_text", "") or "").strip())
+    problems = validate_feedback(feedback, payload)
+    if problems:
+        raise FeedbackError("; ".join(problems))
+
+    _cache[key] = feedback
+    while len(_cache) > CACHE_SIZE:
+        _cache.popitem(last=False)
+    return feedback
+
 
 def generate_ai_summary(
     facts: list[Fact],
     rule_summary: NightSummary,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    history: pd.DataFrame | None = None,
+    night: str | None = None,
+    client=None,
 ) -> NightSummary:
-    """
-    Generate a plain-language sleep summary using OpenAI.
-
-    Raises an exception if the API request fails.
-    The caller is responsible for falling back to the
-    rule-based summary.
-    """
-
-    from openai import OpenAI
-
-    api_key = os.getenv("OPENAI_API_KEY")
-
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not available.")
-
-    model = os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
-
-    client = OpenAI(
-        api_key=api_key,
-        timeout=timeout_seconds,
-    )
-
-    facts_text = _facts_to_text(facts)
-
-    prompt = f"""
-You are writing a short, user-friendly explanation of wearable sleep data.
-
-Use ONLY the measurements supplied below.
-
-Rules:
-- Do not make medical diagnoses.
-- Do not give medical or treatment advice.
-- Do not claim that one measurement caused another.
-- Describe relationships only as patterns or changes.
-- Compare the selected night with the user's own recent baseline.
-- Keep the explanation concise.
-- Write 2 to 4 short sentences.
-- Use clear language for a general user.
-- Do not invent any values.
-
-Rule-based summary headline:
-{rule_summary.headline}
-
-Nightly facts:
-{facts_text}
-
-Write only the plain-language explanation.
-""".strip()
-
-    response = client.responses.create(
-        model=model,
-        input=prompt,
-    )
-
-    text = response.output_text.strip()
-
-    if not text:
-        raise RuntimeError("The AI returned an empty response.")
-
-    return NightSummary(
-        headline=rule_summary.headline,
-        details=[text],
-    )
+    """AI feedback as a NightSummary. Raises if the call or the checks fail."""
+    payload = build_feedback_payload(facts, history, night)
+    feedback = generate_ai_feedback(payload, client=client, timeout_seconds=timeout_seconds)
+    return to_night_summary(feedback, rule_summary.headline)
 
 
 # ---------------------------------------------------------
@@ -155,48 +453,27 @@ Write only the plain-language explanation.
 def get_summary(
     facts: list[Fact],
     use_ai: bool = False,
+    history: pd.DataFrame | None = None,
+    night: str | None = None,
+    client=None,
 ) -> tuple[NightSummary, str]:
+    """Return either an AI-generated or rule-based summary, and which one it is.
+
+    AI off:                      Rule-based
+    AI on, no key:               Rule-based (AI unavailable)
+    AI on, reply accepted:       AI-generated
+    AI on, call or checks fail:  Rule-based (AI fallback)
     """
-    Return either an AI-generated or rule-based summary.
-
-    AI OFF:
-        Rule-based
-
-    AI ON but no key:
-        Rule-based (AI unavailable)
-
-    AI ON and successful:
-        AI-generated
-
-    AI ON but API fails:
-        Rule-based (AI fallback)
-    """
-
     rule_summary = summarize(facts)
-
-    # AI toggle is OFF
     if not use_ai:
         return rule_summary, "Rule-based"
-
-    # AI toggle is ON, but no API key exists
     if not ai_available():
         return rule_summary, "Rule-based (AI unavailable)"
-
-    # AI toggle is ON and key exists
+    if not facts:
+        return rule_summary, "Rule-based (AI fallback)"
     try:
-        ai_summary = generate_ai_summary(
-            facts=facts,
-            rule_summary=rule_summary,
-        )
-
-        return ai_summary, "AI-generated"
-
-    except Exception as exc:
-        # Keep the dashboard running even if OpenAI fails.
-        # Error appears only in the terminal for debugging.
-        print(
-            f"AI insight error: "
-            f"{type(exc).__name__}: {exc}"
-        )
-
+        summary = generate_ai_summary(facts, rule_summary, history=history, night=night, client=client)
+        return summary, "AI-generated"
+    except Exception as exc:  # keep the dashboard running whatever the API does
+        logger.warning("AI insight fell back to rule-based text: %s: %s", type(exc).__name__, exc)
         return rule_summary, "Rule-based (AI fallback)"

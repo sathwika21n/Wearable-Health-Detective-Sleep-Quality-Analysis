@@ -281,6 +281,14 @@ displays supplied statuses and does not recalculate baselines or thresholds.
 
 AI-generated insights are optional. Without an API key, the dashboard uses the rule-based summary.
 
+With the toggle on, `frontend/ai_insights.py` sends the night's computed results (no participant ID or dates) to the OpenAI API and asks for three kinds of feedback as structured JSON:
+
+- **This night:** what stood out compared with the person's baseline, and which changes happened together.
+- **Recent nights:** how the night fits the previous 7 nights, when the app passes the participant's history.
+- **Habit tips:** up to 3 general sleep habits, picked from the fixed list in `HABIT_TIPS`, so the dashboard never shows the model's own advice.
+
+Before a reply is shown it is checked: it may only use numbers from the input, no percentages, no diagnosis or cause-and-effect wording, and no recent-night claims without history. Any failed check, error or timeout falls back to the rule-based summary. Accepted replies are cached in memory, so changing other controls doesn't call the API again for the same night. The tests in `tests/test_ai_insights.py` use a fake client and need no key.
+
 To enable AI insights:
 1. Copy `.env.example` to `.env`
 2. Add your OpenAI API key to `.env`
