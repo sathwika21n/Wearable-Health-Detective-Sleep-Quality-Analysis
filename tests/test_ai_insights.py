@@ -105,6 +105,9 @@ def fresh_cache(monkeypatch):
     ai_insights.clear_cache()
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    # A developer's own .env must not change what the tests see.
+    for name in ("OPENAI_FALLBACK_MODELS", "OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_TIMEOUT_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
     yield
     ai_insights.clear_cache()
 
@@ -296,3 +299,92 @@ def test_bad_env_values_fall_back_to_defaults(monkeypatch, value):
     monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", value)
     assert ai_insights.output_token_limit() == ai_insights.MAX_OUTPUT_TOKENS
     assert ai_insights.request_timeout() == ai_insights.DEFAULT_TIMEOUT_SECONDS
+
+
+# ---------------------------------------------------------
+# Backup models (OPENAI_FALLBACK_MODELS)
+# ---------------------------------------------------------
+
+class ModelFakeClient:
+    """Gives each model its own canned reply or error, and records the order tried."""
+
+    def __init__(self, by_model):
+        self.by_model = by_model
+        self.models_tried = []
+        self.responses = SimpleNamespace(create=self.create)
+
+    def create(self, **kwargs):
+        model = kwargs["model"]
+        self.models_tried.append(model)
+        outcome = self.by_model[model]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return SimpleNamespace(output_text=outcome if isinstance(outcome, str) else json.dumps(outcome))
+
+
+class AuthenticationError(Exception):
+    """Same name as the OpenAI SDK's error, so the code treats it the same way."""
+
+
+NO_HISTORY_REPLY = dict(GOOD_REPLY, recent_nights=[])
+
+
+def test_model_chain_reads_env_in_order_without_repeats(monkeypatch):
+    monkeypatch.setenv("OPENAI_FALLBACK_MODELS", " backup-a , ,backup-b,test-model, backup-a ")
+    assert ai_insights.model_chain() == ["test-model", "backup-a", "backup-b"]
+
+
+def test_no_fallbacks_means_only_the_main_model(monkeypatch):
+    assert ai_insights.model_chain() == ["test-model"]
+
+
+def test_backup_model_is_used_when_the_main_one_fails(monkeypatch):
+    monkeypatch.setenv("OPENAI_FALLBACK_MODELS", "backup-a,backup-b")
+    client = ModelFakeClient({"test-model": TimeoutError("busy"), "backup-a": "not json", "backup-b": NO_HISTORY_REPLY})
+    summary, source = get_summary(facts(), use_ai=True, client=client)
+    assert source == "AI-generated"
+    assert client.models_tried == ["test-model", "backup-a", "backup-b"]
+    assert summary.details[:2] == GOOD_REPLY["this_night"]
+
+
+def test_backups_are_not_tried_once_one_model_succeeds(monkeypatch):
+    monkeypatch.setenv("OPENAI_FALLBACK_MODELS", "backup-a")
+    client = ModelFakeClient({"test-model": NO_HISTORY_REPLY, "backup-a": NO_HISTORY_REPLY})
+    get_summary(facts(), use_ai=True, client=client)
+    assert client.models_tried == ["test-model"]
+
+
+def test_reply_that_fails_checks_moves_to_the_backup(monkeypatch):
+    monkeypatch.setenv("OPENAI_FALLBACK_MODELS", "backup-a")
+    bad = dict(NO_HISTORY_REPLY, this_night=["This could be a sign of insomnia."])
+    client = ModelFakeClient({"test-model": bad, "backup-a": NO_HISTORY_REPLY})
+    _, source = get_summary(facts(), use_ai=True, client=client)
+    assert source == "AI-generated"
+    assert client.models_tried == ["test-model", "backup-a"]
+
+
+def test_rule_based_when_every_model_fails(monkeypatch):
+    monkeypatch.setenv("OPENAI_FALLBACK_MODELS", "backup-a")
+    client = ModelFakeClient({"test-model": RuntimeError("down"), "backup-a": TimeoutError("busy")})
+    summary, source = get_summary(facts(), use_ai=True, client=client)
+    assert source == "Rule-based (AI fallback)"
+    assert summary == summarize(facts())
+    assert client.models_tried == ["test-model", "backup-a"]
+
+
+def test_key_errors_skip_the_backups(monkeypatch):
+    monkeypatch.setenv("OPENAI_FALLBACK_MODELS", "backup-a")
+    client = ModelFakeClient({"test-model": AuthenticationError("bad key"), "backup-a": NO_HISTORY_REPLY})
+    _, source = get_summary(facts(), use_ai=True, client=client)
+    assert source == "Rule-based (AI fallback)"
+    assert client.models_tried == ["test-model"]
+
+
+def test_backup_reply_is_cached_too(monkeypatch):
+    monkeypatch.setenv("OPENAI_FALLBACK_MODELS", "backup-a")
+    client = ModelFakeClient({"test-model": RuntimeError("down"), "backup-a": NO_HISTORY_REPLY})
+    get_summary(facts(), use_ai=True, client=client)
+    get_summary(facts(), use_ai=True, client=client)
+    # Second run (a Streamlit rerun): the backup's accepted reply comes from the cache,
+    # and the main model that failed is not asked again.
+    assert client.models_tried == ["test-model", "backup-a"]

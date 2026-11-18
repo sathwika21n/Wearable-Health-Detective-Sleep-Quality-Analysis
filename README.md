@@ -297,6 +297,15 @@ To enable AI insights:
 
 Do not commit `.env`.
 
-The AI insights also work through [OpenRouter](https://openrouter.ai), which has free models. Put your OpenRouter key in `OPENAI_API_KEY`, set `OPENAI_BASE_URL=https://openrouter.ai/api/v1`, and set `OPENAI_MODEL` to a free model that supports structured outputs (for example `inclusionai/ling-3.2-flash:free`). Free accounts get 50 requests a day, and replies are cached per night.
+The AI insights also work through [OpenRouter](https://openrouter.ai), which has free models. Put your OpenRouter key in `OPENAI_API_KEY`, set `OPENAI_BASE_URL=https://openrouter.ai/api/v1`, and set `OPENAI_MODEL` to a free model that supports structured outputs (for example `baidu/ernie-5.5-flash-preview:free`). Free accounts get 50 requests a day, and replies are cached per night.
+
+Free models can be busy, slow or removed, so `OPENAI_FALLBACK_MODELS` can list backup models, comma-separated, to try in order when the main model errors, times out or gives a reply that fails the checks. The rule-based summary is still the last resort. For example:
+
+```
+OPENAI_MODEL=baidu/ernie-5.5-flash-preview:free
+OPENAI_FALLBACK_MODELS=particle-ai/particle-1:free,inclusionai/ling-3.2-flash:free
+```
+
+A wrong or revoked key skips the backups, since every model would fail the same way. Once any model's reply is accepted for a night, it is reused on reruns.
 
 Many models, including OpenRouter's free ones, reason before they answer, and that reasoning counts toward the output limit. The default limit is 8000 output tokens and the request timeout is 60 seconds. Set `OPENAI_MAX_OUTPUT_TOKENS` or `OPENAI_TIMEOUT_SECONDS` in `.env` to change them.

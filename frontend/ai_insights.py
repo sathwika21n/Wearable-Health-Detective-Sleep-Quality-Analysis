@@ -454,6 +454,50 @@ def generate_ai_feedback(
     return feedback
 
 
+# Errors that would fail the same way on every model with this key, so trying a
+# backup model would only waste time.
+_NO_RETRY_ERRORS = {"AuthenticationError", "PermissionDeniedError"}
+
+
+def model_chain() -> list[str]:
+    """OPENAI_MODEL first, then any OPENAI_FALLBACK_MODELS (comma-separated), without repeats."""
+    models = [os.getenv("OPENAI_MODEL") or DEFAULT_MODEL]
+    models += [name.strip() for name in os.getenv("OPENAI_FALLBACK_MODELS", "").split(",")]
+    return list(dict.fromkeys(name for name in models if name))
+
+
+def generate_with_fallbacks(
+    payload: dict,
+    client=None,
+    timeout_seconds: float | None = None,
+) -> AIFeedback:
+    """Try each model in model_chain() until one gives a reply that passes the checks.
+
+    A model that errors, times out, is busy or gives a reply that fails a check is
+    skipped for the next one. Raises the last error if every model fails, so the
+    caller can fall back to the rule-based summary.
+    """
+    models = model_chain()
+    # A reply any model already gave for this night wins, so a main model that
+    # failed isn't asked again on every Streamlit rerun.
+    for model in models:
+        cached = _cache.get(_cache_key(payload, model))
+        if cached is not None:
+            return cached
+    client = client or _make_client(timeout_seconds or request_timeout())
+    last_error: Exception | None = None
+    for position, model in enumerate(models, start=1):
+        try:
+            return generate_ai_feedback(payload, client=client, model=model, timeout_seconds=timeout_seconds)
+        except Exception as exc:  # any failure moves on to the next model
+            last_error = exc
+            if type(exc).__name__ in _NO_RETRY_ERRORS:
+                raise
+            if position < len(models):
+                logger.warning("AI model %s failed (%s: %s); trying %s", model, type(exc).__name__, exc, models[position])
+    raise last_error
+
+
 def generate_ai_summary(
     facts: list[Fact],
     rule_summary: NightSummary,
@@ -462,9 +506,9 @@ def generate_ai_summary(
     night: str | None = None,
     client=None,
 ) -> NightSummary:
-    """AI feedback as a NightSummary. Raises if the call or the checks fail."""
+    """AI feedback as a NightSummary. Raises if every model fails."""
     payload = build_feedback_payload(facts, history, night)
-    feedback = generate_ai_feedback(payload, client=client, timeout_seconds=timeout_seconds)
+    feedback = generate_with_fallbacks(payload, client=client, timeout_seconds=timeout_seconds)
     return to_night_summary(feedback, rule_summary.headline)
 
 
