@@ -2,25 +2,16 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
 
 from ai_insights import get_summary
 from charts import show_metric_comparison, show_night_timeline, show_temperature_trend
+from data_loader import GENERATED_PATH, load_dashboard_data
 from insights import DISCLAIMER, night_facts
+from report import build_participant_report, report_filename
 
 
-APP_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = APP_DIR.parent
-SAMPLE_PATH = APP_DIR / "sample_sleep_dashboard.csv"
-GENERATED_PATH = PROJECT_DIR / "outputs" / "change_detection_results.csv"
-REQUIRED_COLUMNS = {
-    "participant_id", "night_date", "metric", "unit", "observed_value",
-    "baseline_value", "difference", "baseline_window", "baseline_nights",
-    "minimum_nights", "status", "message",
-}
 METRIC_LABELS = {
     "total_sleep_min": "Total sleep",
     "deep_sleep_min": "Deep sleep",
@@ -44,46 +35,6 @@ WINDOW_LABELS = {
     "14_days": "Previous 14 nights",
     "30_days": "Previous 30 nights",
 }
-
-
-def load_dashboard_data(uploaded_file=None) -> tuple[pd.DataFrame, str]:
-    """Load upload, generated project results, or the sample fallback, in that order."""
-    if uploaded_file is not None:
-        source = uploaded_file
-        source_name = uploaded_file.name
-    elif GENERATED_PATH.exists():
-        source = GENERATED_PATH
-        source_name = f"{GENERATED_PATH.name} (generated project results)"
-    else:
-        source = SAMPLE_PATH
-        source_name = f"{SAMPLE_PATH.name} (sample fallback)"
-    frame = pd.read_csv(source)
-    missing = REQUIRED_COLUMNS - set(frame.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}")
-    frame = frame.copy()
-    frame["participant_id"] = frame["participant_id"].astype("string")
-    frame["night_date"] = pd.to_datetime(frame["night_date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    frame["metric"] = frame["metric"].astype(str)
-    frame["unit"] = frame["unit"].fillna("").astype(str)
-    frame["status"] = frame["status"].fillna("").astype(str).str.lower()
-    for column in ["observed_value", "baseline_value", "difference", "baseline_nights", "minimum_nights"]:
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame["message"] = frame["message"].fillna("").astype(str)
-    for column in ["baseline_std", "z_score", "threshold_value"]:
-        if column not in frame:
-            frame[column] = pd.NA
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    if "threshold_type" not in frame:
-        frame["threshold_type"] = ""
-    valid_statuses = set(STATUS_LABELS)
-    invalid_statuses = set(frame["status"].dropna().unique()) - valid_statuses
-    if invalid_statuses:
-        raise ValueError(f"Unsupported status values: {', '.join(sorted(invalid_statuses))}")
-    missing_observation = frame["observed_value"].isna() & ~frame["status"].eq("insufficient_history")
-    frame.loc[missing_observation, "status"] = "missing"
-    frame = frame.dropna(subset=["participant_id", "night_date"])
-    return frame, source_name
 
 
 def format_value(value, unit: str) -> str:
@@ -193,6 +144,21 @@ if not dates:
     st.warning("No valid night dates are available for this participant.")
     st.stop()
 
+range_start = pd.Timestamp(min(dates)).date()
+range_end = pd.Timestamp(max(dates)).date()
+with st.sidebar:
+    report_range = st.date_input(
+        "PDF report date range",
+        value=(range_start, range_end),
+        min_value=range_start,
+        max_value=range_end,
+        help="Choose the nights included in the shareable participant summary.",
+    )
+if isinstance(report_range, tuple) and len(report_range) == 2:
+    report_start, report_end = report_range
+else:
+    report_start = report_end = report_range
+
 with st.sidebar:
     night = st.selectbox("Night", dates, format_func=lambda value: pd.Timestamp(value).strftime("%b %d, %Y"))
 
@@ -200,6 +166,27 @@ selected = participant_data.loc[participant_data["night_date"].eq(night)].copy()
 if selected["metric"].duplicated(keep=False).any():
     st.error("This participant-night has duplicate metric rows. Keep one row per metric in the input.")
     st.stop()
+
+try:
+    pdf_bytes = build_participant_report(
+        participant_data,
+        participant,
+        baseline_window,
+        report_start,
+        report_end,
+        METRIC_LABELS,
+    )
+    with st.sidebar:
+        st.download_button(
+            "Download participant report (PDF)",
+            data=pdf_bytes,
+            file_name=report_filename(participant, report_start, report_end),
+            mime="application/pdf",
+            use_container_width=True,
+        )
+except ValueError as exc:
+    with st.sidebar:
+        st.warning(f"PDF report unavailable: {exc}")
 
 st.subheader(f"Participant {participant} · Night of {pd.Timestamp(night).strftime('%B %d, %Y')}")
 st.caption("Units appear beside each observed value. Differences are observed minus baseline.")
@@ -307,7 +294,7 @@ with metrics_tab:
                 )
 
 with timeline_tab:
-    show_night_timeline(participant, night)
+    show_night_timeline(participant, night, changes)
 
 with temperature_tab:
     show_temperature_trend(

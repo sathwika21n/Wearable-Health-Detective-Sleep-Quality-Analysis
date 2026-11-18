@@ -187,3 +187,36 @@ show_temperature_trend(data, "p1", "7_days", "2026-01-03", False)
     assert "difference +0.20 °C" in app.warning[0].value
     assert any("Red diamonds mark 2 night(s)" in caption.value for caption in app.caption)
     assert any("not necessarily the selected window's flag rule" in caption.value for caption in app.caption)
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [("2026-01-01", "sleeping_hr_avg_bpm")],
+        [("2026-01-02", "temperature_delta_c")],
+    ],
+    ids=["no-temperature-rows", "temperature-only-after-selected-night"],
+)
+def test_temperature_trend_explains_unavailable_selected_measurement(rows):
+    app = AppTest.from_string(f"""
+import pandas as pd
+from charts import show_temperature_trend
+data = pd.DataFrame(
+    {rows!r},
+    columns=["night_date", "metric"],
+)
+data["participant_id"] = "p1"
+data["baseline_window"] = "7_days"
+data["status"] = "normal"
+data["observed_value"] = 0.1
+data["baseline_value"] = 0.0
+show_temperature_trend(data, "p1", "7_days", "2026-01-01", False)
+""")
+    app.run(timeout=30)
+
+    assert not app.exception
+    assert any("Overall nightly temperature delta" in item.value for item in app.markdown)
+    assert any(
+        "No temperature measurement is available for the selected night." in item.value
+        for item in app.info
+    )
