@@ -268,3 +268,31 @@ def test_too_many_tips_are_rejected():
     tips = [(tip, "") for tip in list(HABIT_TIPS)[:4]]
     problems = validate_feedback(AIFeedback(this_night=["Deep sleep was low."], habit_tips=tips), payload)
     assert "too many habit tips" in problems
+
+
+# ---------------------------------------------------------
+# Output budget and timeout (reasoning models need room to think)
+# ---------------------------------------------------------
+
+def test_default_output_budget_leaves_room_for_reasoning(monkeypatch):
+    monkeypatch.delenv("OPENAI_MAX_OUTPUT_TOKENS", raising=False)
+    client = FakeClient(dict(GOOD_REPLY, recent_nights=[]))
+    get_summary(facts(), use_ai=True, client=client)
+    assert client.calls[0]["max_output_tokens"] == ai_insights.MAX_OUTPUT_TOKENS >= 4000
+
+
+def test_output_budget_and_timeout_can_be_set_in_env(monkeypatch):
+    monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS", "1500")
+    monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "20")
+    client = FakeClient(dict(GOOD_REPLY, recent_nights=[]))
+    get_summary(facts(), use_ai=True, client=client)
+    assert client.calls[0]["max_output_tokens"] == 1500
+    assert ai_insights.request_timeout() == 20.0
+
+
+@pytest.mark.parametrize("value", ["", "lots", "0", "-5"])
+def test_bad_env_values_fall_back_to_defaults(monkeypatch, value):
+    monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS", value)
+    monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", value)
+    assert ai_insights.output_token_limit() == ai_insights.MAX_OUTPUT_TOKENS
+    assert ai_insights.request_timeout() == ai_insights.DEFAULT_TIMEOUT_SECONDS

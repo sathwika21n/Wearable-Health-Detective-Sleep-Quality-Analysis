@@ -49,8 +49,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------
 
 DEFAULT_MODEL = "gpt-6-luna"
-DEFAULT_TIMEOUT_SECONDS = 8.0
-MAX_OUTPUT_TOKENS = 700
+# Reasoning models (including OpenRouter's free ones) spend part of the output
+# budget thinking before they write the JSON, and free models can be slow, so
+# both limits leave room for that. OPENAI_MAX_OUTPUT_TOKENS and
+# OPENAI_TIMEOUT_SECONDS in .env override them.
+DEFAULT_TIMEOUT_SECONDS = 60.0
+MAX_OUTPUT_TOKENS = 8000
 MAX_HISTORY_NIGHTS = 7
 CACHE_SIZE = 64
 
@@ -380,6 +384,24 @@ def _cache_key(payload: dict, model: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _env_number(name: str, default: float, cast=float):
+    """A positive number from the environment, or the default if unset or invalid."""
+    raw = os.getenv(name, "").strip()
+    try:
+        value = cast(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def output_token_limit() -> int:
+    return _env_number("OPENAI_MAX_OUTPUT_TOKENS", MAX_OUTPUT_TOKENS, int)
+
+
+def request_timeout() -> float:
+    return _env_number("OPENAI_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS, float)
+
+
 def _make_client(timeout_seconds: float):
     from openai import OpenAI
 
@@ -393,7 +415,7 @@ def generate_ai_feedback(
     payload: dict,
     client=None,
     model: str | None = None,
-    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = None,
 ) -> AIFeedback:
     """Ask the model for feedback on the payload. Raises on any failure.
 
@@ -406,7 +428,7 @@ def generate_ai_feedback(
         _cache.move_to_end(key)
         return _cache[key]
 
-    client = client or _make_client(timeout_seconds)
+    client = client or _make_client(timeout_seconds or request_timeout())
     response = client.responses.create(
         model=model,
         instructions=INSTRUCTIONS,
@@ -419,7 +441,7 @@ def generate_ai_feedback(
                 "strict": True,
             }
         },
-        max_output_tokens=MAX_OUTPUT_TOKENS,
+        max_output_tokens=output_token_limit(),
     )
     feedback = parse_feedback((getattr(response, "output_text", "") or "").strip())
     problems = validate_feedback(feedback, payload)
@@ -435,7 +457,7 @@ def generate_ai_feedback(
 def generate_ai_summary(
     facts: list[Fact],
     rule_summary: NightSummary,
-    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = None,
     history: pd.DataFrame | None = None,
     night: str | None = None,
     client=None,

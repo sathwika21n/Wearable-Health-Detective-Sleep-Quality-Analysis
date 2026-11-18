@@ -296,3 +296,7 @@ To enable AI insights:
 4. Run with `python -m streamlit run frontend/app.py`
 
 Do not commit `.env`.
+
+The AI insights also work through [OpenRouter](https://openrouter.ai), which has free models. Put your OpenRouter key in `OPENAI_API_KEY`, set `OPENAI_BASE_URL=https://openrouter.ai/api/v1`, and set `OPENAI_MODEL` to a free model that supports structured outputs (for example `inclusionai/ling-3.2-flash:free`). Free accounts get 50 requests a day, and replies are cached per night.
+
+Many models, including OpenRouter's free ones, reason before they answer, and that reasoning counts toward the output limit. The default limit is 8000 output tokens and the request timeout is 60 seconds. Set `OPENAI_MAX_OUTPUT_TOKENS` or `OPENAI_TIMEOUT_SECONDS` in `.env` to change them.
