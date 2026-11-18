@@ -168,6 +168,38 @@ The README also mentions DREAMT, but this script processes the local IFH Affect
 Oura files. Baselines, correlations, anomaly detection, and dashboards are later
 analysis steps, not outputs of timestamp alignment.
 
+### Heart rate before waking
+
+`python3 scripts/pre_waking_hr_rise.py` measures, for every awakening, how much heart
+rate has risen by the time the person wakes and roughly when the rise starts. It uses
+the awakening rule above (stage labels are compared case-insensitively, so `REM` counts
+as sleep) and writes:
+
+- `outputs/pre_waking_hr_rise.csv`: one row per awakening, with the heart rate 30, 25,
+  20, 15, 10 and 5 minutes before waking and the night's sleeping heart rate (the
+  average over that night's light, deep and REM epochs).
+- `outputs/pre_waking_hr_nightly.csv`: one row per participant-night, with the number of
+  awakenings, how many showed a rise, the average and largest rise, and the final
+  morning wake's result.
+
+How each awakening is judged:
+
+- **Rise** is the heart rate 5 minutes before waking minus that night's sleeping heart
+  rate. It also reports the change from 30 to 5 minutes before waking.
+- **Status** is `rise` when heart rate 5 minutes before waking is at least 3 bpm above
+  sleeping heart rate (change with `--threshold`), otherwise `no_rise`. It is
+  `insufficient_data` when the 5-minute sample or the sleeping heart rate is missing, or
+  fewer than 3 of the 6 samples exist.
+- **Rise start** is the earliest sample of the unbroken run of samples, ending 5 minutes
+  before waking, that are all at or above the threshold. A value of 30 means heart rate
+  was already raised for the whole 30-minute window.
+- Heart-rate readings of 0 are sensor gaps and are treated as missing; nothing is
+  interpolated.
+
+Limitation: heart rate and sleep stages are sampled every 5 minutes, so the rise start
+is only known to the nearest 5 minutes, and the last sample is up to 5 minutes before
+the actual wake time. Shorter changes right before waking can't be seen in this data.
+
 ### Nightly feature extraction
 
 Run the feature pipeline from the project root after generating or updating the
