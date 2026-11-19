@@ -217,6 +217,56 @@ The output is a model-ready labeled feature table, not a trained model or a
 validation result. For evaluation, split by participant (rather than randomly
 by night) if the goal is to estimate performance on previously unseen users.
 
+### Import Apple Health data locally
+
+Use the unzipped Apple Health `export.xml` and a dedicated output folder outside
+the repository. Both the XML and the generated CSVs contain personal data.
+
+```bash
+python3 scripts/import_apple_health.py ~/apple-health-local/export.xml \
+  --output-dir ~/apple-health-local/aligned
+```
+
+The importer writes `par_apple_aligned.csv` and `nightly_awakenings.csv`. The
+`date` is the local date of the final asleep interval's end, using its exported
+UTC offset. The aligned timestamps are UTC. The importer starts a new session
+after a gap of at least two hours and selects the session with the most
+observed sleep per local wake date.
+
+Core sleep maps to light sleep. Unspecified sleep counts toward total sleep
+with a blank stage label. Uncovered intervals and ambiguous stage labels stay
+blank. Nightly durations come from the source intervals. Heart rate (bpm) and
+`heart_sdnn_ms` (milliseconds) average samples within each five-minute bin.
+`wrist_temperature_c` is the mean of available readings overlapping the sleep
+window, repeated as a nightly value. Oura RMSSD and `temperature_delta` fields
+stay blank for Apple data.
+
+Generate the Apple dashboard inputs and run Streamlit with the output directory
+configured explicitly:
+
+```bash
+export APPLE_HEALTH_OUTPUT_DIR="$HOME/apple-health-local/aligned"
+python3 scripts/nightly_sleep_features.py \
+  --aligned-dir "$APPLE_HEALTH_OUTPUT_DIR" \
+  --output "$APPLE_HEALTH_OUTPUT_DIR/nightly_sleep_features.csv"
+python3 scripts/build_change_detection_table.py \
+  --aligned-dir "$APPLE_HEALTH_OUTPUT_DIR" \
+  --awakening-file "$APPLE_HEALTH_OUTPUT_DIR/nightly_awakenings.csv" \
+  --output "$APPLE_HEALTH_OUTPUT_DIR/change_detection_results.csv"
+streamlit run frontend/app.py
+```
+
+In the sidebar, choose **Apple Health / Apple Watch** under **Data source**.
+**Oura / public dataset** is the default and runs without Apple files or settings.
+The aligned file supplies the timeline, and the nightly feature file supplies
+the nightly mean of populated HRV bins and the wrist temperature trend. Regenerate
+nightly features if you created them with an earlier version of the importer.
+Apple Watch models and recording settings may leave some metrics unavailable.
+Apple HRV uses SDNN and Oura HRV uses RMSSD. The dashboard displays Apple SDNN
+and absolute wrist temperature separately from the change-detection comparisons.
+Apple insights use the available change-detection metrics. AI is off by default
+and sends summary measurements to the configured provider only when enabled.
+
 ### Streamlit sleep dashboard
 
 Generate the dashboard-ready table from `aligned_data/`, then run the dashboard

@@ -39,6 +39,8 @@ COUNT_COLUMNS = {
     "observed_stage_changes_count": "night_observed_stage_changes",
 }
 
+APPLE_OUTPUT_COLUMNS = ["hrv_sdnn_ms", "wrist_temperature_c"]
+
 OUTPUT_COLUMNS = [
     "participant_id",
     "sleep_date",
@@ -85,6 +87,11 @@ def extract_participant_features(csv_path: Path) -> list[dict[str, object]]:
             )
         for output_column, source_column in COUNT_COLUMNS.items():
             row[output_column] = _one_value(night, source_column, participant_id)
+        if "heart_sdnn_ms" in night:
+            # Equal weight for each populated five-minute bin.
+            row["hrv_sdnn_ms"] = pd.to_numeric(night["heart_sdnn_ms"], errors="coerce").mean()
+        if "wrist_temperature_c" in night:
+            row["wrist_temperature_c"] = _one_value(night, "wrist_temperature_c", participant_id)
         features.append(row)
     return features
 
@@ -101,7 +108,8 @@ def build_nightly_features(
     rows: list[dict[str, object]] = []
     for csv_path in input_files:
         rows.extend(extract_participant_features(csv_path))
-    return pd.DataFrame(rows, columns=OUTPUT_COLUMNS).sort_values(
+    columns = OUTPUT_COLUMNS + [column for column in APPLE_OUTPUT_COLUMNS if any(column in row for row in rows)]
+    return pd.DataFrame(rows, columns=columns).sort_values(
         ["participant_id", "sleep_date", "sleep_start_utc"], na_position="last"
     ).reset_index(drop=True)
 

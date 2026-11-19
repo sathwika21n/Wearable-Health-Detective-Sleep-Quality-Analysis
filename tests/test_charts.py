@@ -58,6 +58,7 @@ def test_dashboard_comparison_selects_metric_and_participant():
     app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "frontend" / "app.py"))
     app.run(timeout=30)
     assert not app.exception
+    assert next(widget for widget in app.selectbox if widget.label == "Data source").value == "Oura / public dataset"
     tabs = {tab.label: tab for tab in app.get("tab")}
     assert set(tabs) == {"Overview", "Metric details", "Night timeline", "Temperature trend", "Compare metrics"}
     assert any("What stood out" in item.value for item in tabs["Overview"].markdown)

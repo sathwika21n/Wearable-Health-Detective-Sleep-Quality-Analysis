@@ -54,9 +54,11 @@ WINDOW_PHRASES = {
 
 
 @st.cache_data(show_spinner=False)
-def load_participant_signals(participant_id: str) -> pd.DataFrame | None:
+def load_participant_signals(participant_id: str, aligned_dir: Path | None = None) -> pd.DataFrame | None:
     """Read one participant's aligned file, or return None when it does not exist."""
-    path = ALIGNED_DIR / f"{participant_id}_aligned.csv"
+    if Path(participant_id).name != participant_id:
+        return None
+    path = (aligned_dir if aligned_dir is not None else ALIGNED_DIR) / f"{participant_id}_aligned.csv"
     if not path.exists():
         return None
     frame = pd.read_csv(path, usecols=["date", "datetime_utc", "hypnogram_class", "heart_rate"])
@@ -97,10 +99,17 @@ def comparison_pairs(data: pd.DataFrame, x_metric: str, y_metric: str) -> pd.Dat
     return pairs.reset_index()
 
 
-def show_metric_comparison(data: pd.DataFrame, selected_night: str) -> None:
+def show_metric_comparison(data: pd.DataFrame, selected_night: str, *, available_only: bool = False) -> None:
     """Display same-night metric associations for the selected participant."""
     st.markdown("### Compare nightly metrics")
-    comparison = st.selectbox("Choose two measurements to compare", list(COMPARISONS))
+    options = list(COMPARISONS)
+    if available_only:
+        observed = set(data.loc[data["observed_value"].notna(), "metric"])
+        options = [name for name, pair in COMPARISONS.items() if observed.issuperset(pair)]
+        if not options:
+            st.info("No pairs of measurements are available for comparison.")
+            return
+    comparison = st.selectbox("Choose two measurements to compare", options)
     x_metric, y_metric = COMPARISONS[comparison]
     x_label, y_label = COMPARISON_LABELS[x_metric], COMPARISON_LABELS[y_metric]
     st.markdown(
@@ -513,14 +522,17 @@ def show_temperature_trend(
     st.altair_chart(temperature_trend_chart(temperature, threshold), use_container_width=True)
 
 
-def show_night_timeline(participant_id: str, night_date: str, flagged: pd.DataFrame | None = None) -> None:
+def show_night_timeline(
+    participant_id: str, night_date: str, flagged: pd.DataFrame | None = None,
+    *, aligned_dir: Path | None = None,
+) -> None:
     """Render the timeline section for the selected participant and night.
 
     flagged holds the night's change rows; the stages and heart rate they
     refer to are pointed out on the chart.
     """
     st.markdown("### Night timeline")
-    signals = load_participant_signals(str(participant_id))
+    signals = load_participant_signals(str(participant_id), aligned_dir)
     if signals is None:
         st.info("Timeline not available for this data source; it needs the participant's aligned 5-minute data.")
         return

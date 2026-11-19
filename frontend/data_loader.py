@@ -5,6 +5,7 @@ Kept separate from app.py so it can be tested without starting Streamlit.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +15,10 @@ APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
 SAMPLE_PATH = APP_DIR / "sample_sleep_dashboard.csv"
 GENERATED_PATH = PROJECT_DIR / "outputs" / "change_detection_results.csv"
+OURA_SOURCE = "Oura / public dataset"
+APPLE_SOURCE = "Apple Health / Apple Watch"
+APPLE_OUTPUT_DIR_ENV = "APPLE_HEALTH_OUTPUT_DIR"
+APPLE_NIGHTLY_METRICS = ("hrv_sdnn_ms", "wrist_temperature_c")
 REQUIRED_COLUMNS = {
     "participant_id", "night_date", "metric", "unit", "observed_value",
     "baseline_value", "difference", "baseline_window", "baseline_nights",
@@ -22,13 +27,45 @@ REQUIRED_COLUMNS = {
 VALID_STATUSES = {"change", "normal", "missing", "insufficient_history"}
 
 
+def apple_output_directory() -> Path | None:
+    configured = os.getenv(APPLE_OUTPUT_DIR_ENV, "").strip()
+    return Path(configured).expanduser() if configured else None
+
+
+def load_apple_nightly_features(output_dir: Path) -> pd.DataFrame:
+    """Read optional Apple-only measurements keyed by participant and local wake date."""
+    path = output_dir / "nightly_sleep_features.csv"
+    if not path.is_file():
+        return pd.DataFrame(columns=["participant_id", "sleep_date", *APPLE_NIGHTLY_METRICS])
+    keys = ["participant_id", "sleep_date"]
+    frame = pd.read_csv(path, usecols=lambda column: column in (*keys, *APPLE_NIGHTLY_METRICS))
+    if not set(keys).issubset(frame):
+        raise ValueError("Apple nightly features need participant_id and sleep_date columns.")
+    frame["participant_id"] = frame["participant_id"].astype("string")
+    frame["sleep_date"] = pd.to_datetime(frame["sleep_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    for metric in APPLE_NIGHTLY_METRICS:
+        frame[metric] = pd.to_numeric(frame.get(metric), errors="coerce")
+    frame = frame.dropna(subset=keys)
+    if frame.duplicated(keys).any():
+        raise ValueError("Apple nightly features need one row per participant and sleep date.")
+    return frame
+
+
 def load_dashboard_data(
     uploaded_file=None,
     generated_path: Path = GENERATED_PATH,
     sample_path: Path = SAMPLE_PATH,
+    *,
+    apple_output_dir: Path | None = None,
+    data_source: str = OURA_SOURCE,
 ) -> tuple[pd.DataFrame, str]:
-    """Load upload, generated project results, or the sample fallback, in that order."""
-    if uploaded_file is not None:
+    """Load Apple results or use the upload, generated Oura, and sample precedence."""
+    if data_source == APPLE_SOURCE:
+        source = apple_output_dir / "change_detection_results.csv" if apple_output_dir is not None else None
+        if source is None or not source.is_file():
+            return pd.DataFrame(), "Apple Health results unavailable"
+        source_name = "Apple Health results"
+    elif uploaded_file is not None:
         source = uploaded_file
         source_name = uploaded_file.name
     elif generated_path.exists():
@@ -62,4 +99,6 @@ def load_dashboard_data(
     missing_observation = frame["observed_value"].isna() & ~frame["status"].eq("insufficient_history")
     frame.loc[missing_observation, "status"] = "missing"
     frame = frame.dropna(subset=["participant_id", "night_date"])
+    if data_source == APPLE_SOURCE:
+        frame = frame.loc[~frame["metric"].isin({"hrv_rmssd_ms", "temperature_delta_c"})]
     return frame, source_name
