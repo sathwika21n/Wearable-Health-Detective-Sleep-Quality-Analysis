@@ -10,9 +10,11 @@ Run from the project root:
     python run.py --force         rerun the selected steps even if they look up to date
 
 Steps run in pipeline order. A step runs when one of its outputs is missing or
-older than one of its inputs. Files that are committed to the repo (the aligned
-data and the analysis tables) are only rebuilt when --from-raw or --all asks
-for it, so a normal run never changes tracked files.
+older than one of its inputs. Each step is checked again when it is reached,
+so a step whose inputs an earlier step just rebuilt runs too. Files that are
+committed to the repo (the aligned data and the analysis tables) are only
+rebuilt when --from-raw or --all asks for it, so a normal run never changes
+tracked files.
 """
 
 from __future__ import annotations
@@ -119,11 +121,67 @@ def should_run(step: Step, status: str, args: argparse.Namespace) -> bool:
     return args.force or status == "outdated"
 
 
+def decide(step: Step, args: argparse.Namespace, rebuilt: set[Path]) -> tuple[str, bool]:
+    """Return the step's status and whether it should run.
+
+    `rebuilt` holds the outputs of earlier steps in this run. A step that reads
+    one of them counts as outdated even if the timestamps don't show it yet.
+    """
+    status = step_status(step)
+    if status == "up to date" and rebuilt.intersection(step.inputs):
+        status = "outdated"
+    return status, should_run(step, status, args)
+
+
+def plan_steps(steps: list[Step], args: argparse.Namespace) -> list[tuple[Step, str, bool]]:
+    """Preview of what a run would do, assuming each planned step rebuilds its outputs."""
+    rebuilt: set[Path] = set()
+    plan = []
+    for step in steps:
+        status, run = decide(step, args, rebuilt)
+        if run:
+            rebuilt.update(step.outputs)
+        plan.append((step, status, run))
+    return plan
+
+
 def run_step(step: Step) -> None:
     print(f"\n==> {step.name} (scripts/{step.script})", flush=True)
     result = subprocess.run([sys.executable, str(PROJECT_DIR / "scripts" / step.script)], cwd=PROJECT_DIR)
     if result.returncode != 0:
         sys.exit(f"\nStopped: scripts/{step.script} failed (exit code {result.returncode}). Fix the error above and run again.")
+
+
+def run_pipeline(steps: list[Step], args: argparse.Namespace, runner=run_step) -> list[Step]:
+    """Run the steps in order and return the ones that ran.
+
+    Each step is decided when it is reached, not up front, so a step whose
+    inputs were just rebuilt by an earlier step isn't skipped on stale state.
+    """
+    rebuilt: set[Path] = set()
+    ran = []
+    for step in steps:
+        _status, run = decide(step, args, rebuilt)
+        if run:
+            runner(step)
+            ran.append(step)
+            rebuilt.update(step.outputs)
+        elif rebuilt.intersection(step.inputs):
+            print(f"\nNote: \"{step.name}\" reads data rebuilt above but was left as committed. "
+                  "Add --all to rebuild it too.")
+    return ran
+
+
+def launch_dashboard() -> int:
+    """Run the dashboard and return Streamlit's exit code (0 when stopped with Ctrl+C)."""
+    print("\nStarting the dashboard. Press Ctrl+C here to stop it.", flush=True)
+    try:
+        result = subprocess.run([sys.executable, "-m", "streamlit", "run", str(DASHBOARD_APP)], cwd=PROJECT_DIR)
+    except KeyboardInterrupt:
+        return 0
+    if result.returncode != 0:
+        print(f"\nThe dashboard stopped with an error (exit code {result.returncode}).", file=sys.stderr)
+    return result.returncode
 
 
 def check_requirements(need_dashboard: bool) -> None:
@@ -136,24 +194,25 @@ def check_requirements(need_dashboard: bool) -> None:
         )
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="only report each step's status")
     parser.add_argument("--no-dashboard", action="store_true", help="don't start the dashboard afterwards")
     parser.add_argument("--all", action="store_true", help="also rebuild the analysis tables")
     parser.add_argument("--from-raw", action="store_true", help="also re-align the raw data (slow)")
     parser.add_argument("--force", action="store_true", help="rerun selected steps even if up to date")
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
     if not RAW_DIR.exists() and not ALIGNED_DIR.exists():
         sys.exit(f"No data found. Expected the raw data in {RAW_DIR.relative_to(PROJECT_DIR)}.")
 
-    plan = []
+    plan = plan_steps(STEPS, args)
     print("Pipeline steps, in order:")
-    for number, step in enumerate(STEPS, start=1):
-        status = step_status(step)
-        run = should_run(step, status, args)
-        plan.append((step, run))
+    for number, (step, status, run) in enumerate(plan, start=1):
         if not run and status == "outdated" and step.group != "dashboard":
             # Committed files: after a git checkout their timestamps say little,
             # so the copy in the repo is used unless a rebuild was asked for.
@@ -162,25 +221,21 @@ def main() -> None:
         print(f"  {number}. {step.name:<46} {status:<11} {note}".rstrip())
 
     if args.check:
-        if any(step.group == "dashboard" and step_status(step) != "up to date" for step in STEPS):
-            print("\nThe dashboard's results need rebuilding. Run:  python run.py")
-        return
+        if any(step.group == "dashboard" and status != "up to date" for step, status, _run in plan):
+            command = "python run.py" + (" --from-raw" if args.from_raw else "")
+            print(f"\nThe dashboard's results need rebuilding. Run:  {command}")
+        return 0
 
     open_dashboard = not args.no_dashboard
     check_requirements(open_dashboard)
-    for step, run in plan:
-        if run:
-            run_step(step)
+    ran = run_pipeline(STEPS, args)
 
-    if not any(run for _step, run in plan):
+    if not ran:
         print("\nEverything the dashboard needs is up to date.")
     if open_dashboard:
-        print("\nStarting the dashboard. Press Ctrl+C here to stop it.", flush=True)
-        try:
-            subprocess.run([sys.executable, "-m", "streamlit", "run", str(DASHBOARD_APP)], cwd=PROJECT_DIR)
-        except KeyboardInterrupt:
-            pass
+        return launch_dashboard()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
