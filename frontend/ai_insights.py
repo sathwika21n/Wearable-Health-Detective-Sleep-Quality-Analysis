@@ -10,10 +10,15 @@ computed:
    fixed list in ``HABIT_TIPS``. The model only chooses tip ids and gives a short
    reason; the tip wording itself always comes from this file.
 
-The reply is structured JSON. It is checked before it is shown (no numbers that
-are not in the input, no diagnosis or cause-and-effect wording, no recent-night
-claims without history, known tip ids only). Anything that fails a check, times
-out or errors falls back to the rule-based summary, so the dashboard never breaks.
+The reply is structured JSON, and the model never writes numbers itself: it
+writes placeholders such as ``{deep_sleep_min.observed}`` and this module fills
+them in from the data, so every number shown comes from the results. Before
+that, the reply is checked: no digits of its own, each placeholder next to the
+name of its own measurement, direction words that match the data, every
+sentence about a measurement, no diagnosis, condition or cause-and-effect
+wording, no recent-night claims without history, and known tip ids only.
+Anything that fails a check, times out or errors falls back to the rule-based
+summary, so the dashboard never breaks.
 
 ``get_summary(facts, use_ai)`` keeps the signature app.py already uses. Passing
 ``history`` (the participant's rows for the selected baseline window) and
@@ -35,7 +40,7 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 
-from insights import WINDOW_PHRASES, Fact, NightSummary, summarize
+from insights import DIRECTION_WORDS, WINDOW_PHRASES, Fact, NightSummary, format_amount, summarize
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -77,20 +82,72 @@ HABIT_TIPS = {
 }
 HABIT_TIP_NOTE = "Habit ideas are general sleep habits, not medical advice."
 
-# Words that would make the feedback sound like a diagnosis, treatment or a
-# cause-and-effect claim. Matching is case-insensitive on word starts.
+# Words that would make the feedback sound like a diagnosis, a health claim,
+# treatment or a cause-and-effect claim. Matching is case-insensitive on word starts.
 BANNED_PATTERNS = [
-    r"\bdiagnos", r"\bdisorder", r"\binsomnia", r"\bapnea", r"\bapnoea", r"\bdisease",
-    r"\billness", r"\bsymptom", r"\bmedicat", r"\bprescri", r"\btreat", r"\bcure",
-    r"\bsupplement", r"\bmelatonin", r"\bcaused\b", r"\bcauses\b", r"\bbecause of\b",
-    r"\bdue to\b", r"\bled to\b", r"\bleads to\b", r"\bresult(?:s|ed)? in\b",
+    # diagnosis, conditions and symptoms
+    r"\bdiagnos", r"\bdisorder", r"\bcondition", r"\bsyndrome", r"\bdisease", r"\billness",
+    r"\bsick", r"\bsymptom", r"\bchronic", r"\binsomnia", r"\bapnea", r"\bapnoea", r"\bnarcolep",
+    r"\brestless leg", r"\bhypertens", r"\bhypotens", r"\bblood pressure", r"\barrhythm",
+    r"\btachycard", r"\bbradycard", r"\bfibrillat", r"\bafib\b",
+    r"\bheart (?:problem|disease|attack|failure|condition)",
+    r"\bdepress", r"\banxiety", r"\banxious", r"\bburnout", r"\bfever", r"\binfect", r"\bvirus",
+    r"\bcovid", r"\bflu\b", r"\bdeprivation",
+    # health judgements and warnings
+    r"\bsigns? of\b", r"\bindicat", r"\bwarning", r"\brisk", r"\bdanger", r"\bconcern", r"\bworr",
+    r"\balarming", r"\bserious", r"\bunhealthy", r"\babnormal", r"\bhealth (?:problem|issue)",
+    r"\bsuggest", r"\bmeans you\b", r"\bpoints? to\b", r"\bstress", r"\bfatigue", r"\bexhaust",
+    r"\brecover", r"\bimmune",
+    # medical care and treatment
+    r"\bmedical", r"\bdoctor", r"\bphysician", r"\bclinic", r"\bmedicat", r"\bprescri", r"\btreat",
+    r"\bcure", r"\btherap", r"\bsupplement", r"\bmelatonin", r"\bpill",
+    # cause and effect
+    r"\bcaused\b", r"\bcauses\b", r"\bbecause\b", r"\bdue to\b", r"\bled to\b", r"\bleads to\b",
+    r"\bresult(?:s|ed)? in\b", r"\bresult of\b", r"\btriggered", r"\bexplains?\b",
+    # claims about the person rather than the measurements
+    r"\byou(?:'re| are)? (?:may |might |could |likely |probably |possibly )?(?:have|has|suffer|be sick|are sick)\b",
+    r"\byou(?:'re| are) (?:sick|ill|unwell)\b",
 ]
 _BANNED_RE = re.compile("|".join(BANNED_PATTERNS), re.IGNORECASE)
-_NUMBER_RE = re.compile(r"(?<![\w.])[-+]?\d+(?:\.\d+)?")
-_PERCENT_RE = re.compile(r"\d\s*(?:%|percent\b)", re.IGNORECASE)
+_DIGIT_RE = re.compile(r"\d")
+_PLACEHOLDER_RE = re.compile(r"\{([a-z0-9_]+)\.([a-z_]+)\}")
+# Spelled-out amounts would be numbers the data didn't give ("twenty minutes", "half").
+_NUMBER_WORDS = (r"zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+                 r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|a few|several|a couple of")
+_SPELLED_AMOUNT_RE = re.compile(
+    rf"\b(?:{_NUMBER_WORDS})\s+(?:more\s+|fewer\s+|extra\s+)?(?:min|mins|minutes?|hours?|hrs?|bpm|beats|ms|"
+    r"milliseconds?|degrees?|percent|times)\b"
+    r"|\b(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|half|twice|double|"
+    r"triple|quarter|dozen|percent|percentage)\b",
+    re.IGNORECASE,
+)
+_MEASUREMENT_RE = re.compile(r"\bmeasurements?\b", re.IGNORECASE)
+UP_WORDS = {"rose", "risen", "rise", "rises", "rising", "increased", "increase", "increases", "higher",
+            "more", "longer", "up", "climbed", "above", "gained", "jumped", "longest", "highest", "most"}
+DOWN_WORDS = {"fell", "fallen", "fall", "falls", "dropped", "drop", "drops", "decreased", "decrease",
+              "decreases", "lower", "less", "fewer", "shorter", "down", "declined", "below", "lost",
+              "shortest", "lowest", "least"}
 
-# Numbers this small are fine in prose ("2 of 7 nights", "3 measurements").
-FREE_NUMBERS = set(range(0, 11))
+# Other names the model may use for a measurement besides its dashboard label.
+METRIC_ALIASES = {
+    "total_sleep_min": ["total sleep", "sleep time"],
+    "rem_sleep_min": ["rem"],
+    "awake_min": ["time awake", "awake time"],
+    "observed_awakenings_count": ["awakenings"],
+    "sleeping_hr_avg_bpm": ["heart rate"],
+    "hrv_rmssd_ms": ["hrv", "heart rate variability"],
+    "temperature_delta_c": ["temperature"],
+}
+
+# Placeholder fields the model may use, and which payload value each one shows.
+THIS_NIGHT_FIELDS = {
+    "observed": "observed", "usual": "baseline", "change": "difference",
+    "prior_nights": "prior_nights", "nights_needed": "nights_needed",
+}
+RECENT_FIELDS = {
+    "recent_average": "previous_average", "recent_lowest": "previous_lowest",
+    "recent_highest": "previous_highest", "recent_flagged": "previous_nights_flagged",
+}
 
 FEEDBACK_SCHEMA = {
     "type": "object",
@@ -144,8 +201,15 @@ Write three parts:
 Rules:
 - Never diagnose, name a condition, or mention medicine, supplements or treatment.
 - Never say one measurement caused another; say they happened on the same night.
-- Only use numbers that appear in the data. Do not calculate new numbers,
-  percentages or averages. Minutes may be written as hours and minutes.
+- Never write digits or spelled-out amounts. To show a number, copy one of the
+  placeholders listed in the data, such as {{deep_sleep_min.observed}}; it is
+  filled in with the value and unit, and {{x.change}} already includes its
+  direction (for example "1 h 18 min shorter"). Put each placeholder right after
+  the name of its own measurement, e.g. "Deep sleep was {{deep_sleep_min.change}}
+  than usual." Do not calculate new numbers, percentages or averages.
+- Every sentence, and every habit tip reason, must be about at least one of the
+  measurements, named the way the data names it.
+- Never make claims about the person's health. Only describe the measurements.
 - Speak to the person as "you". Keep every sentence under 40 words.
 """.strip()
 
@@ -189,6 +253,7 @@ def _round(value: float | None, unit: str) -> float | int | None:
 def _fact_entry(fact: Fact) -> dict:
     entry = {
         "metric": fact.label,
+        "ref": fact.metric,
         "unit": fact.unit,
         "status": fact.status,
         "observed": _round(fact.observed, fact.unit),
@@ -200,7 +265,11 @@ def _fact_entry(fact: Fact) -> dict:
     if fact.status == "insufficient_history":
         entry["prior_nights"] = fact.baseline_nights
         entry["nights_needed"] = fact.minimum_nights
-    return {key: value for key, value in entry.items() if value is not None and value != ""}
+    entry = {key: value for key, value in entry.items() if value is not None and value != ""}
+    entry["placeholders"] = [
+        f"{{{fact.metric}.{name}}}" for name, key in THIS_NIGHT_FIELDS.items() if key in entry
+    ]
+    return entry
 
 
 def _recent_nights(facts: list[Fact], history: pd.DataFrame | None, night: str | None, max_nights: int) -> dict | None:
@@ -225,15 +294,19 @@ def _recent_nights(facts: list[Fact], history: pd.DataFrame | None, night: str |
             continue
         metrics.append({
             "metric": fact.label,
+            "ref": fact.metric,
             "unit": fact.unit,
             "previous_values": values,
             "previous_average": _round(sum(present) / len(present), fact.unit),
+            "previous_lowest": min(present),
+            "previous_highest": max(present),
             "this_night": _round(fact.observed, fact.unit),
             "previous_nights_flagged": int(rows["status"].astype(str).eq("change").sum()),
+            "placeholders": [f"{{{fact.metric}.{name}}}" for name in RECENT_FIELDS],
         })
     if not metrics:
         return None
-    return {"nights_included": len(nights), "metrics": metrics}
+    return {"nights_included": len(nights), "placeholders": ["{recent.nights}"], "metrics": metrics}
 
 
 def build_feedback_payload(
@@ -259,41 +332,117 @@ def build_feedback_payload(
 # Checking the reply
 # ---------------------------------------------------------
 
-def _payload_numbers(payload) -> set[float]:
-    """Every number in the payload, plus the forms prose may use for it."""
-    numbers: set[float] = set()
-
-    def add(value: float, unit: str | None) -> None:
-        numbers.update({value, abs(value)})
-        if unit == "min":
-            minutes = int(round(abs(value)))
-            hours, rest = divmod(minutes, 60)
-            numbers.update({hours, rest, round(minutes / 60, 1)})
-
-    def walk(node, unit=None) -> None:
-        if isinstance(node, dict):
-            unit = node.get("unit", unit)
-            for value in node.values():
-                walk(value, unit)
-        elif isinstance(node, list):
-            for value in node:
-                walk(value, unit)
-        elif isinstance(node, bool):
-            return
-        elif isinstance(node, (int, float)):
-            add(float(node), unit)
-        elif isinstance(node, str):
-            for match in _NUMBER_RE.findall(node):
-                add(float(match), None)
-
-    walk(payload)
-    return numbers
+def _change_text(difference: float, unit: str) -> str:
+    """'1 h 18 min shorter', '10 bpm higher', '2 more' or 'unchanged'."""
+    if not difference:
+        return "unchanged"
+    up_word, down_word = DIRECTION_WORDS.get(unit, ("higher", "lower"))
+    amount = format_amount(abs(difference), unit).lstrip("+")
+    return f"{amount} {up_word if difference > 0 else down_word}"
 
 
-def _number_allowed(number: float, allowed: set[float]) -> bool:
-    if abs(number) in FREE_NUMBERS:
-        return True
-    return any(abs(abs(number) - abs(value)) <= max(0.051, 0.005 * abs(value)) for value in allowed)
+def placeholder_values(payload: dict) -> dict[str, str]:
+    """What each placeholder the model may use shows, e.g. 'deep_sleep_min.observed' -> '1 h 32 min'."""
+    values = {}
+    for entry in payload.get("this_night", []):
+        ref, unit = entry["ref"], entry.get("unit", "")
+        for name, key in THIS_NIGHT_FIELDS.items():
+            if key not in entry:
+                continue
+            if name == "change":
+                values[f"{ref}.{name}"] = _change_text(entry[key], unit)
+            elif name in {"prior_nights", "nights_needed"}:
+                values[f"{ref}.{name}"] = str(int(entry[key]))
+            else:
+                values[f"{ref}.{name}"] = format_amount(entry[key], unit)
+    recent = payload.get("recent_nights")
+    if recent:
+        values["recent.nights"] = str(int(recent["nights_included"]))
+        for metric in recent["metrics"]:
+            ref, unit = metric["ref"], metric.get("unit", "")
+            for name, key in RECENT_FIELDS.items():
+                if metric.get(key) is None:
+                    continue
+                shown = str(int(metric[key])) if name == "recent_flagged" else format_amount(metric[key], unit)
+                values[f"{ref}.{name}"] = shown
+    return values
+
+
+def _metric_names(payload: dict) -> list[tuple[re.Pattern, str]]:
+    """(pattern, ref) for every name a measurement in the payload may go by, longest first."""
+    names: dict[str, str] = {}
+    for entry in payload.get("this_night", []):
+        for name in [entry["metric"], *METRIC_ALIASES.get(entry["ref"], [])]:
+            names.setdefault(name.lower(), entry["ref"])
+    ordered = sorted(names.items(), key=lambda item: len(item[0]), reverse=True)
+    return [(re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE), ref) for name, ref in ordered]
+
+
+def _name_spans(text: str, names: list[tuple[re.Pattern, str]]) -> list[tuple[int, int, str]]:
+    """Where each measurement is named in the text; longer names win over names inside them."""
+    spans: list[tuple[int, int, str]] = []
+    for pattern, ref in names:
+        for match in pattern.finditer(text):
+            if all(match.end() <= start or match.start() >= end for start, end, _ in spans):
+                spans.append((match.start(), match.end(), ref))
+    return sorted(spans)
+
+
+def _governing_name(spans, position: int):
+    """The measurement a placeholder belongs to: the last one named before it, else the first after."""
+    before = [span for span in spans if span[1] <= position]
+    if before:
+        return before[-1]
+    after = [span for span in spans if span[0] >= position]
+    return after[0] if after else None
+
+
+def _direction_words(segment: str) -> tuple[bool, bool]:
+    words = set(re.findall(r"[a-z]+", _PLACEHOLDER_RE.sub(" ", segment).lower()))
+    return bool(words & UP_WORDS), bool(words & DOWN_WORDS)
+
+
+def _check_text(text: str, values: dict[str, str], names, directions, is_reason: bool) -> list[str]:
+    problems = []
+    if len(text) > MAX_SENTENCE_CHARS:
+        problems.append("a sentence is too long")
+    banned = _BANNED_RE.search(text)
+    if banned:
+        problems.append(f"banned wording: {banned.group(0)!r}")
+
+    without_placeholders = _PLACEHOLDER_RE.sub(" ", text)
+    if _DIGIT_RE.search(without_placeholders):
+        problems.append("numbers must come from placeholders, not be written out")
+    if "{" in without_placeholders or "}" in without_placeholders:
+        problems.append("malformed placeholder")
+    spelled = _SPELLED_AMOUNT_RE.search(without_placeholders)
+    if spelled:
+        problems.append(f"amounts must come from placeholders: {spelled.group(0)!r}")
+
+    spans = _name_spans(text, names)
+    placeholders = list(_PLACEHOLDER_RE.finditer(text))
+    if not placeholders and not spans and (is_reason or not _MEASUREMENT_RE.search(text)):
+        problems.append("a sentence isn't about any of the measurements")
+
+    for match in placeholders:
+        ref, name = match.group(1), match.group(2)
+        if f"{ref}.{name}" not in values:
+            problems.append(f"unknown placeholder: {match.group(0)}")
+            continue
+        if ref == "recent":
+            continue
+        owner = _governing_name(spans, match.start())
+        if owner is None or owner[2] != ref:
+            problems.append(f"{match.group(0)} isn't next to the name of its own measurement")
+            continue
+        sign = directions.get(ref)
+        if sign and name in {"observed", "change"}:
+            # Words between the measurement's name and its number must not point the other way.
+            start, end = (owner[1], match.start()) if owner[1] <= match.start() else (match.end(), owner[0])
+            up, down = _direction_words(text[start:end])
+            if (sign > 0 and down) or (sign < 0 and up):
+                problems.append(f"direction words around {match.group(0)} contradict the data")
+    return problems
 
 
 def validate_feedback(feedback: AIFeedback, payload: dict) -> list[str]:
@@ -313,55 +462,70 @@ def validate_feedback(feedback: AIFeedback, payload: dict) -> list[str]:
     if unknown:
         problems.append(f"unknown habit tip ids: {', '.join(unknown)}")
 
-    allowed = _payload_numbers(payload)
-    texts = feedback.this_night + feedback.recent_nights + [reason for _, reason in feedback.habit_tips]
-    for text in texts:
-        if len(text) > MAX_SENTENCE_CHARS:
-            problems.append("a sentence is too long")
-        banned = _BANNED_RE.search(text)
-        if banned:
-            problems.append(f"banned wording: {banned.group(0)!r}")
-        if _PERCENT_RE.search(text):
-            # The payload has no percentages, so any percentage is a new calculation.
-            problems.append("percentages are not in the data")
-        invented = [n for n in _NUMBER_RE.findall(text) if not _number_allowed(float(n), allowed)]
-        if invented:
-            problems.append(f"numbers not in the data: {', '.join(invented)}")
-    return problems
+    values = placeholder_values(payload)
+    names = _metric_names(payload)
+    directions = {
+        entry["ref"]: (1 if entry["difference"] > 0 else -1)
+        for entry in payload.get("this_night", [])
+        if entry.get("status") == "change" and entry.get("difference")
+    }
+    for text in feedback.this_night + feedback.recent_nights:
+        problems += _check_text(text, values, names, directions, is_reason=False)
+    for _, reason in feedback.habit_tips:
+        if reason:
+            problems += _check_text(reason, values, names, directions, is_reason=True)
+    return list(dict.fromkeys(problems))
+
+
+def render(text: str, values: dict[str, str]) -> str:
+    """Fill the placeholders in with the values from the data."""
+    return _PLACEHOLDER_RE.sub(lambda match: values[f"{match.group(1)}.{match.group(2)}"], text)
 
 
 def parse_feedback(text: str) -> AIFeedback:
-    """Turn the model's JSON text into AIFeedback, or raise FeedbackError."""
+    """Turn the model's JSON text into AIFeedback, or raise FeedbackError.
+
+    The reply must match FEEDBACK_SCHEMA exactly: all three keys, nothing else,
+    lists of strings, and habit tips with exactly a tip_id and a reason.
+    """
     try:
         data = json.loads(text)
     except (TypeError, json.JSONDecodeError) as exc:
         raise FeedbackError(f"reply is not JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise FeedbackError("reply is not a JSON object")
+    expected = set(FEEDBACK_SCHEMA["required"])
+    if set(data) != expected:
+        missing, extra = expected - set(data), set(data) - expected
+        raise FeedbackError(f"reply keys don't match the schema (missing {sorted(missing)}, extra {sorted(extra)})")
 
     def strings(key: str) -> list[str]:
-        value = data.get(key, [])
+        value = data[key]
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise FeedbackError(f"{key} must be a list of strings")
         return [item.strip() for item in value if item.strip()]
 
-    tips = data.get("habit_tips", [])
+    tips = data["habit_tips"]
     if not isinstance(tips, list):
         raise FeedbackError("habit_tips must be a list")
     parsed_tips = []
     for tip in tips:
-        if not isinstance(tip, dict) or not isinstance(tip.get("tip_id"), str):
-            raise FeedbackError("each habit tip needs a tip_id")
-        parsed_tips.append((tip["tip_id"], str(tip.get("reason", "")).strip()))
+        if (not isinstance(tip, dict) or set(tip) != {"tip_id", "reason"}
+                or not isinstance(tip["tip_id"], str) or not isinstance(tip["reason"], str)):
+            raise FeedbackError("each habit tip needs exactly a tip_id and a reason, both strings")
+        parsed_tips.append((tip["tip_id"], tip["reason"].strip()))
     return AIFeedback(strings("this_night"), strings("recent_nights"), parsed_tips)
 
 
-def to_night_summary(feedback: AIFeedback, headline: str) -> NightSummary:
-    """Fit the AI feedback into the panel's headline-plus-bullets format."""
-    details = list(feedback.this_night)
-    details += [f"Recent nights: {sentence}" for sentence in feedback.recent_nights]
+def to_night_summary(feedback: AIFeedback, headline: str, payload: dict) -> NightSummary:
+    """Fit the AI feedback into the panel's headline-plus-bullets format, with the numbers filled in."""
+    values = placeholder_values(payload)
+    details = [render(sentence, values) for sentence in feedback.this_night]
+    details += [f"Recent nights: {render(sentence, values)}" for sentence in feedback.recent_nights]
     for tip_id, reason in feedback.habit_tips:
         tip = HABIT_TIPS[tip_id]
+        reason = render(reason, values)
+        reason = reason[:1].upper() + reason[1:]
         details.append(f"Habit to try: {tip} {reason}" if reason else f"Habit to try: {tip}")
     if feedback.habit_tips:
         details.append(HABIT_TIP_NOTE)
@@ -454,9 +618,10 @@ def generate_ai_feedback(
     return feedback
 
 
-# Errors that would fail the same way on every model with this key, so trying a
-# backup model would only waste time.
-_NO_RETRY_ERRORS = {"AuthenticationError", "PermissionDeniedError"}
+# A bad or missing key fails the same way on every model, so trying a backup model
+# would only waste time. A 403 (PermissionDeniedError) can be specific to one model,
+# such as a model the key or region isn't allowed to use, so it moves on to the backup.
+_NO_RETRY_ERRORS = {"AuthenticationError"}
 
 
 def model_chain() -> list[str]:
@@ -509,7 +674,7 @@ def generate_ai_summary(
     """AI feedback as a NightSummary. Raises if every model fails."""
     payload = build_feedback_payload(facts, history, night)
     feedback = generate_with_fallbacks(payload, client=client, timeout_seconds=timeout_seconds)
-    return to_night_summary(feedback, rule_summary.headline)
+    return to_night_summary(feedback, rule_summary.headline, payload)
 
 
 # ---------------------------------------------------------

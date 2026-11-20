@@ -305,7 +305,7 @@ With the toggle on, `frontend/ai_insights.py` sends the night's computed results
 - **Recent nights:** how the night fits the previous 7 nights, when the app passes the participant's history.
 - **Habit tips:** up to 3 general sleep habits, picked from the fixed list in `HABIT_TIPS`, so the dashboard never shows the model's own advice.
 
-Before a reply is shown it is checked: it may only use numbers from the input, no percentages, no diagnosis or cause-and-effect wording, and no recent-night claims without history. Any failed check, error or timeout falls back to the rule-based summary. Accepted replies are cached in memory, so changing other controls doesn't call the API again for the same night. The tests in `tests/test_ai_insights.py` use a fake client and need no key.
+The model never writes numbers itself. It writes placeholders such as `{deep_sleep_min.observed}`, and the dashboard fills them in from the results, so every number shown comes from the data. Before a reply is shown it is checked: no digits or spelled-out amounts of its own, each placeholder right next to the name of its own measurement, direction words ("rose", "shorter") that match the data, every sentence about a measurement, no diagnosis, condition, health-claim or cause-and-effect wording, no recent-night claims without history, and the reply must match the response schema exactly. Any failed check, error or timeout falls back to the rule-based summary. Accepted replies are cached in memory, so changing other controls doesn't call the API again for the same night. The tests in `tests/test_ai_insights.py` use a fake client and need no key.
 
 To enable AI insights:
 1. Copy `.env.example` to `.env`
@@ -324,6 +324,6 @@ OPENAI_MODEL=baidu/ernie-5.5-flash-preview:free
 OPENAI_FALLBACK_MODELS=particle-ai/particle-1:free,inclusionai/ling-3.2-flash:free
 ```
 
-A wrong or revoked key skips the backups, since every model would fail the same way. Once any model's reply is accepted for a night, it is reused on reruns.
+A wrong or revoked key skips the backups, since every model would fail the same way. A 403 for one model (for example a model the key isn't allowed to use) moves on to the next one. Once any model's reply is accepted for a night, it is reused on reruns.
 
 Many models, including OpenRouter's free ones, reason before they answer, and that reasoning counts toward the output limit. The default limit is 8000 output tokens and the request timeout is 60 seconds. Set `OPENAI_MAX_OUTPUT_TOKENS` or `OPENAI_TIMEOUT_SECONDS` in `.env` to change them.
