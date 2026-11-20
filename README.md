@@ -299,6 +299,14 @@ displays supplied statuses and does not recalculate baselines or thresholds.
 
 AI-generated insights are optional. Without an API key, the dashboard uses the rule-based summary.
 
+With the toggle on, `frontend/ai_insights.py` sends the night's computed results (no participant ID or dates) to the OpenAI API and asks for three kinds of feedback as structured JSON:
+
+- **This night:** what stood out compared with the person's baseline, and which changes happened together.
+- **Recent nights:** how the night fits the previous 7 nights, when the app passes the participant's history.
+- **Habit tips:** up to 3 general sleep habits, picked from the fixed list in `HABIT_TIPS`, so the dashboard never shows the model's own advice.
+
+The model never writes numbers itself. It writes placeholders such as `{deep_sleep_min.observed}`, and the dashboard fills them in from the results, so every number shown comes from the data. Before a reply is shown it is checked: no digits or spelled-out amounts of its own, each placeholder right next to the name of its own measurement, direction words ("rose", "shorter") that match the data, every sentence about a measurement, no diagnosis, condition, health-claim or cause-and-effect wording, no recent-night claims without history, and the reply must match the response schema exactly. Any failed check, error or timeout falls back to the rule-based summary. Accepted replies are cached in memory, so changing other controls doesn't call the API again for the same night. The tests in `tests/test_ai_insights.py` use a fake client and need no key.
+
 To enable AI insights:
 1. Copy `.env.example` to `.env`
 2. Add your OpenAI API key to `.env`
@@ -306,3 +314,16 @@ To enable AI insights:
 4. Run with `python -m streamlit run frontend/app.py`
 
 Do not commit `.env`.
+
+The AI insights also work through [OpenRouter](https://openrouter.ai), which has free models. Put your OpenRouter key in `OPENAI_API_KEY`, set `OPENAI_BASE_URL=https://openrouter.ai/api/v1`, and set `OPENAI_MODEL` to a free model that supports structured outputs (for example `baidu/ernie-5.5-flash-preview:free`). Free accounts get 50 requests a day, and replies are cached per night.
+
+Free models can be busy, slow or removed, so `OPENAI_FALLBACK_MODELS` can list backup models, comma-separated, to try in order when the main model errors, times out or gives a reply that fails the checks. The rule-based summary is still the last resort. For example:
+
+```
+OPENAI_MODEL=baidu/ernie-5.5-flash-preview:free
+OPENAI_FALLBACK_MODELS=particle-ai/particle-1:free,inclusionai/ling-3.2-flash:free
+```
+
+A wrong or revoked key skips the backups, since every model would fail the same way. A 403 for one model (for example a model the key isn't allowed to use) moves on to the next one. Once any model's reply is accepted for a night, it is reused on reruns.
+
+Many models, including OpenRouter's free ones, reason before they answer, and that reasoning counts toward the output limit. The default limit is 8000 output tokens and the request timeout is 60 seconds. Set `OPENAI_MAX_OUTPUT_TOKENS` or `OPENAI_TIMEOUT_SECONDS` in `.env` to change them.
