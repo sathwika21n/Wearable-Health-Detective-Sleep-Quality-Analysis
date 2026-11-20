@@ -1,14 +1,43 @@
+from datetime import datetime
 from pathlib import Path
 import argparse
 import pandas as pd
 
+from awakening_detection import normalize_stages, sleep_to_awake_mask
+
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 ALIGNED_DIR = PROJECT_DIR / "aligned_data"
-DEFAULT_OUTPUT = PROJECT_DIR / "outputs" / "awakening_hr_windows.csv"
+DEFAULT_OUTPUT = PROJECT_DIR / "outputs" / "awakening_hr_windows_rem.csv"
+STAGE_DISPLAY_NAMES = {"light": "Light", "deep": "Deep", "rem": "REM"}
 
-VALID_SLEEP_STAGES = ["light", "deep", "rem"]
-EXPECTED_INTERVAL = pd.Timedelta(minutes=5)
+
+def write_output(data, output_path):
+    """Write the CSV, falling back if the requested file is locked."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        data.to_csv(output_path, index=False)
+        return output_path
+    except PermissionError:
+        fallback_stem = output_path.stem
+        if not fallback_stem.endswith("_rem"):
+            fallback_stem = f"{fallback_stem}_rem"
+        fallback_path = output_path.with_name(
+            f"{fallback_stem}{output_path.suffix}"
+        )
+        try:
+            data.to_csv(fallback_path, index=False)
+        except PermissionError:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            fallback_path = output_path.with_name(
+                f"{fallback_stem}_{timestamp}{output_path.suffix}"
+            )
+            data.to_csv(fallback_path, index=False)
+        print(
+            f"Could not overwrite {output_path}; it may be open in another "
+            f"program. Wrote the output to {fallback_path} instead."
+        )
+        return fallback_path
 
 
 def extract_awakening_hr_windows(
@@ -45,30 +74,27 @@ def extract_awakening_hr_windows(
                 "datetime_utc"
             ).copy()
 
-            current_stage = night_df["hypnogram_class"]
-            previous_stage = current_stage.shift()
-
-            time_difference = night_df[
-                "datetime_utc"
-            ].diff()
-
             # Same awakening rule used previously:
             # sleep -> awake, exactly 5 minutes apart
-            awakening_mask = (
-                current_stage.eq("awake")
-                & previous_stage.isin(VALID_SLEEP_STAGES)
-                & time_difference.eq(EXPECTED_INTERVAL)
+            awakening_mask = sleep_to_awake_mask(
+                night_df["hypnogram_class"],
+                night_df["datetime_utc"],
             )
 
+            previous_stages = normalize_stages(
+                night_df["hypnogram_class"]
+            ).shift()
             awakening_rows = night_df[awakening_mask]
 
-            for _, awakening in awakening_rows.iterrows():
+            for row_index, awakening in awakening_rows.iterrows():
 
                 awakening_time = awakening["datetime_utc"]
+                previous_stage = previous_stages.loc[row_index]
 
                 result = {
                     "participant_id": participant_id,
                     "date": night_date.strftime("%Y-%m-%d"),
+                    "previous_sleep_stage": STAGE_DISPLAY_NAMES[previous_stage],
                     "awakening_time_utc": awakening_time,
                 }
 
@@ -149,18 +175,14 @@ def main():
         ]
     )
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    awakening_windows.to_csv(
-        args.output,
-        index=False
-    )
+    output_path = write_output(awakening_windows, args.output)
 
     print(
         f"\nFound {len(awakening_windows)} awakenings."
     )
 
     print(
-        f"Saved HR windows to: {args.output}"
+        f"Saved HR windows to: {output_path}"
     )
 
     print("\nSample:")

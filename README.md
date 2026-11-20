@@ -150,7 +150,8 @@ as an awakening. These are coarse observed counts, not clinical arousal counts.
 
 An awakening is defined as a transition from a valid sleep stage
 (`light`, `deep`, or `rem`) to `awake` between consecutive 5-minute
-sleep-stage samples.
+sleep-stage samples. Stage labels are compared case-insensitively, so the
+uppercase `REM` label in aligned data is treated as `rem`.
 
 - Consecutive `awake` labels are treated as one awakening.
 - A single 5-minute awake period is retained as a short wake period.
@@ -159,6 +160,14 @@ sleep-stage samples.
 - If a sleep window begins in the `awake` state, that period contributes to
   total awake time but does not count as an awakening.
 - Total awake time is calculated as the number of `awake` epochs × 5 minutes.
+
+`scripts/explore_data.py` writes the nightly counts to
+`outputs/participant_nightly_awakening/nightly_awakenings.csv`.
+Run `python3 scripts/awakening_hr_windows.py` to write the corresponding
+pre-awakening heart-rate windows to `outputs/awakening_hr_windows_rem.csv`; both
+outputs use the same case-insensitive transition rule on the aligned epochs.
+The HR-window output includes `previous_sleep_stage` (`Light`, `Deep`, or
+`REM`) so awakenings can be analyzed by the sleep stage they followed.
 
 The available files contain a nightly temperature deviation, not absolute skin
 temperature or a temperature time series. Repeating this nightly measurement
