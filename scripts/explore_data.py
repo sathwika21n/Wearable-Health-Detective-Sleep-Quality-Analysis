@@ -2,6 +2,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from awakening_detection import (
+    build_nightly_awakenings,
+    normalize_stages,
+    sleep_to_awake_mask,
+)
+
 
 # Source sleep durations are in seconds; these values describe the whole night.
 NIGHTLY_COLUMNS = {
@@ -18,45 +24,13 @@ NIGHTLY_COLUMNS = {
     "rmssd": "night_hrv_rmssd",
 }
 
-VALID_STAGES = ["awake", "light", "deep", "REM"]  # REM is uppercase in data
-SLEEP_STAGES = ["light", "deep", "REM"]  # stages counted as asleep
+VALID_STAGES = {"awake", "light", "deep", "rem"}
 EPOCH = pd.Timedelta(minutes=5)  # one hypnogram label length
 
 
-def awakening_metrics(hypnogram):
-    if hypnogram.empty:
-        return pd.NA, pd.NA
-
-    hypnogram = hypnogram.sort_values("timestamp_dt").copy()
-
-    current = hypnogram["hypnogram_class"]
-    previous = current.shift()
-
-    # Only treat rows as consecutive if exactly 5 minutes apart
-    adjacent = (
-        hypnogram["timestamp_dt"]
-        .diff()
-        .eq(pd.Timedelta(minutes=5))
-    )
-
-    # Awakening = sleep -> awake
-    awakenings = (
-        adjacent
-        & current.eq("awake")
-        & previous.isin(SLEEP_STAGES)
-    )
-
-    awakening_count = int(awakenings.sum())
-
-    # Each awake epoch represents 5 minutes
-    awake_epochs = int(current.eq("awake").sum())
-    total_awake_minutes = awake_epochs * 5
-
-    return awakening_count, total_awake_minutes
-
 def observed_transitions(hypnogram):
     """Count only adjacent 5-minute labels; do not bridge missing samples."""
-    stages = hypnogram["hypnogram_class"]
+    stages = normalize_stages(hypnogram["hypnogram_class"])
     previous = stages.shift()
     adjacent = hypnogram["timestamp_dt"].diff().eq(pd.Timedelta(minutes=5))
     valid = stages.isin(VALID_STAGES)  # current label is known
@@ -95,7 +69,6 @@ participant_dirs = sorted(base_dir.glob("par_*"))
 
 all_sleep = []
 all_aligned = []
-nightly_awakening_rows = []
 
 for participant_dir in participant_dirs:
     sleep_path = participant_dir / "oura" / "sleep.csv"
@@ -155,22 +128,20 @@ for participant_dir in participant_dirs:
             for source, target in NIGHTLY_COLUMNS.items():
                 merged[target] = row[source]
             awakenings, changes = observed_transitions(hyp_window)
-            awakening_count, awake_minutes = awakening_metrics(hyp_window)
             merged["night_observed_awakenings"] = awakenings
             merged["night_observed_stage_changes"] = changes
+            normalized_stages = normalize_stages(hyp_window["hypnogram_class"])
+            awake_minutes = (
+                int(normalized_stages.eq("awake").sum() * 5)
+                if normalized_stages.isin(VALID_STAGES).any()
+                else pd.NA
+            )
             merged["night_observed_awake_minutes"] = awake_minutes
             merged["participant_id"] = participant_dir.name
 
             all_aligned.append(merged)
             participant_aligned.append(merged)
 
-            nightly_awakening_rows.append({
-                "participant_id": participant_dir.name,
-                "date": night_date,
-                "awakening_count": awakening_count,
-                "total_awake_minutes": awake_minutes
-            })
-            
     if participant_aligned:
         aligned_output_dir.mkdir(parents=True, exist_ok=True)
         participant_df = pd.concat(participant_aligned, ignore_index=True)
@@ -216,25 +187,11 @@ print("...")
 if not all_sleep_df.empty:
     print(all_sleep_df[["date", "total", "deep", "rem", "awake", "efficiency", "hr_average", "rmssd", "temperature_delta"]].head())
 
-# Save final nightly awakening table
-nightly_awakenings_df = pd.DataFrame(nightly_awakening_rows)
+# Save final nightly awakening table from the exported aligned epochs so its
+# counts match the HR-window generator.
+nightly_awakenings_df = build_nightly_awakenings(aligned_output_dir)
 
 if not nightly_awakenings_df.empty:
-    nightly_awakenings_df["participant_number"] = (
-        nightly_awakenings_df["participant_id"]
-        .str.extract(r"(\d+)")
-        .astype(int)
-    )
-
-    nightly_awakenings_df = nightly_awakenings_df.sort_values(
-        ["participant_number", "date"]
-    )
-
-    # Remove helper column BEFORE saving
-    nightly_awakenings_df = nightly_awakenings_df.drop(
-        columns="participant_number"
-    )
-
     # Save full nightly table
     (project_dir / "outputs" / "participant_nightly_awakening").mkdir(parents=True, exist_ok=True)  # create output folder
     nightly_awakenings_df.to_csv(
