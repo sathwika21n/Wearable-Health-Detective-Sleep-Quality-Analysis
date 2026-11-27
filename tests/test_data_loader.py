@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "frontend"))
 
-from data_loader import SAMPLE_PATH, load_dashboard_data  # noqa: E402
+from data_loader import APPLE_SOURCE, SAMPLE_PATH, load_dashboard_data  # noqa: E402
 
 
 def results_row(**overrides):
@@ -74,3 +74,23 @@ def test_blank_measurement_is_shown_as_missing_unless_history_is_short(tmp_path)
     frame, _ = load_dashboard_data(generated_path=generated)
     statuses = dict(zip(frame["metric"], frame["status"]))
     assert statuses == {"total_sleep_min": "missing", "deep_sleep_min": "insufficient_history"}
+
+
+def test_apple_mode_never_falls_back_to_oura(tmp_path):
+    oura = write_results(tmp_path / "oura.csv", results_row())
+    frame, source = load_dashboard_data(generated_path=oura, data_source=APPLE_SOURCE, apple_output_dir=tmp_path)
+    assert frame.empty
+    assert source == "Apple Health results unavailable"
+
+
+def test_apple_and_oura_metrics_stay_separate(tmp_path):
+    results = write_results(
+        tmp_path / "change_detection_results.csv",
+        results_row(metric="hrv_rmssd_ms"),
+        results_row(metric="temperature_delta_c"),
+        results_row(metric="total_sleep_min"),
+    )
+    apple, _ = load_dashboard_data(data_source=APPLE_SOURCE, apple_output_dir=tmp_path)
+    oura, _ = load_dashboard_data(generated_path=results)
+    assert apple["metric"].tolist() == ["total_sleep_min"]
+    assert oura["metric"].tolist() == ["hrv_rmssd_ms", "temperature_delta_c", "total_sleep_min"]

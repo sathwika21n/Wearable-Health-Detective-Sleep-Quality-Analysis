@@ -7,7 +7,10 @@ import streamlit as st
 
 from ai_insights import get_summary
 from charts import show_metric_comparison, show_night_timeline, show_temperature_trend
-from data_loader import GENERATED_PATH, load_dashboard_data
+from data_loader import (
+    APPLE_SOURCE, GENERATED_PATH, OURA_SOURCE, apple_output_directory,
+    load_apple_nightly_features, load_dashboard_data,
+)
 from insights import DISCLAIMER, night_facts
 from report import build_participant_report, report_filename
 
@@ -20,7 +23,7 @@ METRIC_LABELS = {
     "awake_min": "Awake time",
     "observed_awakenings_count": "Observed awakenings",
     "sleeping_hr_avg_bpm": "Sleeping heart rate",
-    "hrv_rmssd_ms": "Heart rate variability",
+    "hrv_rmssd_ms": "Heart rate variability (RMSSD)",
     "temperature_delta_c": "Temperature deviation",
 }
 STATUS_LABELS = {
@@ -90,34 +93,47 @@ st.markdown(
 )
 
 with st.sidebar:
-    st.header("Data source")
-    uploaded = st.file_uploader("Upload dashboard CSV", type=["csv"])
-    if uploaded is not None:
-        st.caption("Using uploaded CSV.")
-    elif GENERATED_PATH.exists():
-        st.caption("Using the generated baseline and change-detection table.")
-    else:
-        st.caption("Generated results not found; using documented sample data.")
+    source = st.selectbox("Data source", [OURA_SOURCE, APPLE_SOURCE])
+    is_apple = source == APPLE_SOURCE
+    apple_dir = apple_output_directory() if is_apple else None
+    uploaded = None
+    if not is_apple:
+        uploaded = st.file_uploader("Upload dashboard CSV", type=["csv"])
+        if uploaded is not None:
+            st.caption("Using uploaded CSV.")
+        elif GENERATED_PATH.exists():
+            st.caption("Using the generated baseline and change-detection table.")
+        else:
+            st.caption("Generated results not found; using documented sample data.")
 
     st.divider()
     st.header("Insights")
     use_ai = st.toggle(
         "Use AI-generated insights",
         value=False,
+        key=f"ai_insights_{source}",
         help=(
+            "Sends the selected night's summary measurements to the configured AI provider."
+            if is_apple else
             "Uses AI when an API key is available. "
             "If AI is unavailable or fails, the dashboard automatically uses the rule-based summary."
         ),
     )
 
 try:
-    data, source_name = load_dashboard_data(uploaded)
+    data, source_name = load_dashboard_data(uploaded, data_source=source, apple_output_dir=apple_dir)
 except (OSError, pd.errors.ParserError, ValueError) as exc:
-    st.error(f"Could not load dashboard data: {exc}")
+    if is_apple:
+        st.error("Could not read the Apple Health change-detection CSV. Check the setup in the README.")
+    else:
+        st.error(f"Could not load dashboard data: {exc}")
     st.stop()
 
 if data.empty:
-    st.warning("No dashboard records are available in this file.")
+    if is_apple:
+        st.info("Apple Health results are unavailable. Generate the Apple results and set APPLE_HEALTH_OUTPUT_DIR.")
+    else:
+        st.warning("No dashboard records are available in this file.")
     st.stop()
 
 with st.sidebar:
@@ -126,6 +142,13 @@ with st.sidebar:
     participant = st.selectbox("Participant", participants)
 
 participant_data = data.loc[data["participant_id"].eq(participant)]
+apple_nights = None
+if apple_dir is not None:
+    try:
+        apple_features = load_apple_nightly_features(apple_dir)
+        apple_nights = apple_features.loc[apple_features["participant_id"].eq(participant)]
+    except (OSError, ValueError):
+        st.warning("Apple nightly features could not be loaded. The change-detection results are still available.")
 windows = sorted(participant_data["baseline_window"].dropna().astype(str).unique())
 if not windows:
     st.warning("No baseline-window values are available for this participant.")
@@ -217,6 +240,11 @@ with overview_tab:
     st.caption("Explore the other tabs for individual metrics, the night timeline, temperature, and comparisons.")
 
 with metrics_tab:
+    if is_apple:
+        sdnn = None if apple_nights is None else apple_nights.loc[
+            apple_nights["sleep_date"].eq(night), "hrv_sdnn_ms"
+        ].mean()
+        st.metric("Heart rate variability (SDNN)", "Unavailable" if pd.isna(sdnn) else format_value(sdnn, "ms"))
     if selected.empty:
         st.warning("No metrics are available for the selected night.")
     else:
@@ -294,13 +322,26 @@ with metrics_tab:
                 )
 
 with timeline_tab:
-    show_night_timeline(participant, night, changes)
+    show_night_timeline(participant, night, changes, aligned_dir=apple_dir)
 
 with temperature_tab:
-    show_temperature_trend(
-        participant_data, participant, baseline_window, night,
-        use_participant_baselines=uploaded is None and GENERATED_PATH.exists(),
-    )
+    if is_apple:
+        st.markdown("### Sleeping wrist temperature")
+        temperatures = None if apple_nights is None else apple_nights.dropna(subset=["wrist_temperature_c"])
+        if temperatures is None or temperatures.empty:
+            st.info("Wrist temperature is unavailable in these Apple Health results.")
+        else:
+            plot = temperatures.assign(sleep_date=pd.to_datetime(temperatures["sleep_date"])).rename(
+                columns={"sleep_date": "Night", "wrist_temperature_c": "Wrist temperature (°C)"}
+            )
+            st.line_chart(plot.sort_values("Night"), x="Night", y="Wrist temperature (°C)")
+            if not temperatures["sleep_date"].eq(night).any():
+                st.info("Wrist temperature is unavailable for the selected night.")
+    else:
+        show_temperature_trend(
+            participant_data, participant, baseline_window, night,
+            use_participant_baselines=uploaded is None and GENERATED_PATH.exists(),
+        )
 
 with comparison_tab:
-    show_metric_comparison(participant_data, night)
+    show_metric_comparison(participant_data, night, available_only=is_apple)
