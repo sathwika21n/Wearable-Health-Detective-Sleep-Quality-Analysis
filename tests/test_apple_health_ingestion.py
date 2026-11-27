@@ -163,10 +163,15 @@ def test_dashboard_apple_source(apple_export, tmp_path, monkeypatch, has_tempera
     assert not any("RMSSD" in metric.label for metric in app.metric)
     assert all("temperature deviation" not in name for name in widget("Choose two measurements to compare").options)
     tabs = {tab.label: tab for tab in app.get("tab")}
-    assert tabs["Night timeline"].get("arrow_vega_lite_chart")
+    # Streamlit renamed the Vega-Lite element exposed by AppTest.
+    def charts_in(tab):
+        return tab.get("vega_lite_chart") or tab.get("arrow_vega_lite_chart")
+
+    assert charts_in(tabs["Night timeline"])
     if has_temperature:
-        assert tabs["Temperature trend"].get("arrow_vega_lite_chart")
+        assert charts_in(tabs["Temperature trend"])
     else:
+        assert not charts_in(tabs["Temperature trend"])
         assert any("Wrist temperature is unavailable" in info.value for info in tabs["Temperature trend"].info)
     assert any("Rule-based summary" in item.value for item in app.caption)
     app.toggle[0].set_value(True).run()
