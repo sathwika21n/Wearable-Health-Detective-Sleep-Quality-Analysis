@@ -111,6 +111,35 @@ All scripts and the dashboard use the packages listed in `requirements.txt`:
 python3 -m pip install -r requirements.txt
 ```
 
+## Running everything with one command
+
+After installing, this builds whatever the dashboard needs and opens it:
+
+```bash
+python3 run.py
+```
+
+`run.py` goes through the pipeline in order and only reruns a step when its
+output is missing or older than its inputs:
+
+1. Align raw data into 5-minute rows (`scripts/explore_data.py`)
+2. Build the dashboard's change-detection table (`scripts/build_change_detection_table.py`)
+3. Nightly sleep features (`scripts/nightly_sleep_features.py`)
+4. Sleep-score model dataset (`scripts/build_sleep_score_dataset.py`)
+5. Prior-10-night participant baselines (`scripts/participant_baselines.py`)
+6. Heart-rate windows before each awakening (`scripts/awakening_hr_windows.py`)
+
+By default only step 2 is rebuilt, since the aligned data and analysis tables
+are already committed. Useful options:
+
+| Command | What it does |
+| --- | --- |
+| `python3 run.py --check` | List each step and whether it is up to date, without running anything |
+| `python3 run.py --no-dashboard` | Build the outputs but don't open the dashboard |
+| `python3 run.py --all` | Also rebuild the analysis tables (steps 3–6) when they're out of date |
+| `python3 run.py --from-raw` | Also re-align the raw data in `data/ifh_affect` (step 1, slow) |
+| `python3 run.py --force` | Rerun the selected steps even if they look up to date |
+
 ## Timestamp alignment and exported fields
 
 Run `python3 scripts/explore_data.py` to regenerate `aligned_data/par_*_aligned.csv`.
@@ -269,8 +298,10 @@ and sends summary measurements to the configured provider only when enabled.
 
 ### Streamlit sleep dashboard
 
-Generate the dashboard-ready table from `aligned_data/`, then run the dashboard
-from the project root. If dependencies are missing, install them with:
+`python3 run.py` builds the dashboard-ready table and starts the dashboard (see
+"Running everything with one command" above). To do the same steps by hand,
+generate the table from `aligned_data/`, then run the dashboard from the project
+root. If dependencies are missing, install them with:
 
 ```bash
 python3 -m pip install -r requirements.txt
