@@ -202,7 +202,9 @@ overview_tab, metrics_tab, timeline_tab, temperature_tab, comparison_tab = st.ta
 
 with overview_tab:
     facts = night_facts(selected, METRIC_LABELS)
-    night_summary, insight_source = get_summary(facts, use_ai=use_ai)
+    night_summary, insight_source = get_summary(
+        facts, use_ai=use_ai, history=participant_data, night=night
+    )
     with st.container(border=True):
         st.markdown("### What stood out")
         st.markdown(f"**{night_summary.headline}**")
