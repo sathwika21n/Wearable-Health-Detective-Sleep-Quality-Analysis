@@ -1,24 +1,24 @@
 """Optional AI-generated sleep feedback with a rule-based fallback.
 
-The AI writes three kinds of feedback, all from results the dashboard has already
-computed:
+The AI chooses what to say; this module decides how it is said. The model replies
+with structured claims only, so no text it writes ever reaches the screen:
 
-1. This night: what changed compared with the person's own baseline, and which
-   changes happened on the same night.
-2. Recent nights: how this night fits the participant's previous nights.
-3. Habit tips: general, non-medical sleep habits, picked by the model from the
-   fixed list in ``HABIT_TIPS``. The model only chooses tip ids and gives a short
-   reason; the tip wording itself always comes from this file.
+1. This night: which measurements to mention, and the direction each moved
+   compared with the person's own baseline, plus which changes happened on the
+   same night.
+2. Recent nights: how this night fits the participant's previous nights, as one
+   of a few fixed patterns (for example "lower than on any previous night").
+3. Habit tips: general, non-medical sleep habits from the fixed list in
+   ``HABIT_TIPS``, each tied to a measurement that changed this night.
 
-The reply is structured JSON, and the model never writes numbers itself: it
-writes placeholders such as ``{deep_sleep_min.observed}`` and this module fills
-them in from the data, so every number shown comes from the results. Before
-that, the reply is checked: no digits of its own, each placeholder next to the
-name of its own measurement, direction words that match the data, every
-sentence about a measurement, no diagnosis, condition or cause-and-effect
-wording, no recent-night claims without history, and known tip ids only.
-Anything that fails a check, times out or errors falls back to the rule-based
-summary, so the dashboard never breaks.
+Every claim is checked against the data before anything is shown: the
+measurement has to be in the input, the direction has to match its status and
+the sign of its difference, a recent-nights pattern has to hold for the
+previous values that were sent, and recent-night claims need history. The
+sentences are then written from the templates in this file with the data's own
+values, so the wording can't add numbers, diagnoses, health claims or
+cause-and-effect claims. A reply with any wrong claim, a timeout or an error
+falls back to the rule-based summary, so the dashboard never breaks.
 
 ``get_summary(facts, use_ai)`` keeps the signature app.py already uses. Passing
 ``history`` (the participant's rows for the selected baseline window) and
@@ -32,7 +32,6 @@ import json
 import logging
 import math
 import os
-import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,7 +65,6 @@ CACHE_SIZE = 64
 MAX_THIS_NIGHT = 4
 MAX_RECENT_NIGHTS = 3
 MAX_HABIT_TIPS = 3
-MAX_SENTENCE_CHARS = 320
 
 # General sleep habits only. The model picks ids from this list; it never writes
 # its own advice, so the dashboard can't show medical or treatment suggestions.
@@ -82,135 +80,89 @@ HABIT_TIPS = {
 }
 HABIT_TIP_NOTE = "Habit ideas are general sleep habits, not medical advice."
 
-# Words that would make the feedback sound like a diagnosis, a health claim,
-# treatment or a cause-and-effect claim. Matching is case-insensitive on word starts.
-BANNED_PATTERNS = [
-    # diagnosis, conditions and symptoms
-    r"\bdiagnos", r"\bdisorder", r"\bcondition", r"\bsyndrome", r"\bdisease", r"\billness",
-    r"\bsick", r"\bsymptom", r"\bchronic", r"\binsomnia", r"\bapnea", r"\bapnoea", r"\bnarcolep",
-    r"\brestless leg", r"\bhypertens", r"\bhypotens", r"\bblood pressure", r"\barrhythm",
-    r"\btachycard", r"\bbradycard", r"\bfibrillat", r"\bafib\b",
-    r"\bheart (?:problem|disease|attack|failure|condition)",
-    r"\bdepress", r"\banxiety", r"\banxious", r"\bburnout", r"\bfever", r"\binfect", r"\bvirus",
-    r"\bcovid", r"\bflu\b", r"\bdeprivation",
-    # health judgements and warnings
-    r"\bsigns? of\b", r"\bindicat", r"\bwarning", r"\brisk", r"\bdanger", r"\bconcern", r"\bworr",
-    r"\balarming", r"\bserious", r"\bunhealthy", r"\babnormal", r"\bhealth (?:problem|issue)",
-    r"\bsuggest", r"\bmeans you\b", r"\bpoints? to\b", r"\bstress", r"\bfatigue", r"\bexhaust",
-    r"\brecover", r"\bimmune",
-    # medical care and treatment
-    r"\bmedical", r"\bdoctor", r"\bphysician", r"\bclinic", r"\bmedicat", r"\bprescri", r"\btreat",
-    r"\bcure", r"\btherap", r"\bsupplement", r"\bmelatonin", r"\bpill",
-    # cause and effect
-    r"\bcaused\b", r"\bcauses\b", r"\bbecause\b", r"\bdue to\b", r"\bled to\b", r"\bleads to\b",
-    r"\bresult(?:s|ed)? in\b", r"\bresult of\b", r"\btriggered", r"\bexplains?\b",
-    # claims about the person rather than the measurements
-    r"\byou(?:'re| are)? (?:may |might |could |likely |probably |possibly )?(?:have|has|suffer|be sick|are sick)\b",
-    r"\byou(?:'re| are) (?:sick|ill|unwell)\b",
-]
-_BANNED_RE = re.compile("|".join(BANNED_PATTERNS), re.IGNORECASE)
-_DIGIT_RE = re.compile(r"\d")
-_PLACEHOLDER_RE = re.compile(r"\{([a-z0-9_]+)\.([a-z_]+)\}")
-# Spelled-out amounts would be numbers the data didn't give ("twenty minutes", "half").
-_NUMBER_WORDS = (r"zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
-                 r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|a few|several|a couple of")
-_SPELLED_AMOUNT_RE = re.compile(
-    rf"\b(?:{_NUMBER_WORDS})\s+(?:more\s+|fewer\s+|extra\s+)?(?:min|mins|minutes?|hours?|hrs?|bpm|beats|ms|"
-    r"milliseconds?|degrees?|percent|times)\b"
-    r"|\b(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|half|twice|double|"
-    r"triple|quarter|dozen|percent|percentage)\b",
-    re.IGNORECASE,
-)
-_MEASUREMENT_RE = re.compile(r"\bmeasurements?\b", re.IGNORECASE)
-UP_WORDS = {"rose", "risen", "rise", "rises", "rising", "increased", "increase", "increases", "higher",
-            "more", "longer", "up", "climbed", "above", "gained", "jumped", "longest", "highest", "most"}
-DOWN_WORDS = {"fell", "fallen", "fall", "falls", "dropped", "drop", "drops", "decreased", "decrease",
-              "decreases", "lower", "less", "fewer", "shorter", "down", "declined", "below", "lost",
-              "shortest", "lowest", "least"}
+# What the model may say about a measurement this night. Each one must match the
+# measurement's status, and for a change, the sign of its difference.
+DIRECTIONS = ["higher", "lower", "usual", "not_enough_history", "missing"]
+EXPECTED_DIRECTION = {"normal": "usual", "insufficient_history": "not_enough_history", "missing": "missing"}
 
-# Other names the model may use for a measurement besides its dashboard label.
-METRIC_ALIASES = {
-    "total_sleep_min": ["total sleep", "sleep time"],
-    "rem_sleep_min": ["rem"],
-    "awake_min": ["time awake", "awake time"],
-    "observed_awakenings_count": ["awakenings"],
-    "sleeping_hr_avg_bpm": ["heart rate"],
-    "hrv_rmssd_ms": ["hrv", "heart rate variability"],
-    "temperature_delta_c": ["temperature"],
+# How this night may relate to the previous nights. Each is checked against the
+# previous values that were sent to the model.
+RECENT_PATTERNS = {
+    "highest_of_recent": "this night is above every previous value",
+    "lowest_of_recent": "this night is below every previous value",
+    "within_recent_range": "this night is between the lowest and highest previous values",
+    "above_recent_average": "this night is above previous_average",
+    "below_recent_average": "this night is below previous_average",
+    "flagged_before": "previous_nights_flagged is at least 1",
 }
+FEEDBACK_KEYS = ("this_night", "same_night", "recent_nights", "habit_tips")
 
-# Placeholder fields the model may use, and which payload value each one shows.
-THIS_NIGHT_FIELDS = {
-    "observed": "observed", "usual": "baseline", "change": "difference",
-    "prior_nights": "prior_nights", "nights_needed": "nights_needed",
-}
-RECENT_FIELDS = {
-    "recent_average": "previous_average", "recent_lowest": "previous_lowest",
-    "recent_highest": "previous_highest", "recent_flagged": "previous_nights_flagged",
-}
 
-FEEDBACK_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "this_night": {
+def feedback_schema(refs: list[str]) -> dict:
+    """The strict JSON schema for a reply; measurement refs are limited to the ones sent."""
+    metric = {"type": "string", "enum": refs}
+
+    def claims(description: str, **fields) -> dict:
+        return {
             "type": "array",
-            "description": "1 to 4 short sentences about the selected night compared with the baseline.",
-            "items": {"type": "string"},
-        },
-        "recent_nights": {
-            "type": "array",
-            "description": "0 to 3 short sentences about how this night fits the recent nights. Empty if no recent nights are given.",
-            "items": {"type": "string"},
-        },
-        "habit_tips": {
-            "type": "array",
-            "description": "0 to 3 habit tips chosen from the allowed tip ids.",
+            "description": description,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "properties": {
-                    "tip_id": {"type": "string", "enum": sorted(HABIT_TIPS)},
-                    "reason": {
-                        "type": "string",
-                        "description": "One short clause linking the tip to this night's pattern.",
-                    },
-                },
-                "required": ["tip_id", "reason"],
+                "properties": fields,
+                "required": list(fields),
             },
+        }
+
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "this_night": claims(
+                "1 to 4 measurements to mention, most notable first, each with its direction.",
+                metric=metric, direction={"type": "string", "enum": DIRECTIONS},
+            ),
+            "same_night": {
+                "type": "array",
+                "description": "Two or more measurements with status change that changed on this same night, or empty.",
+                "items": metric,
+            },
+            "recent_nights": claims(
+                "0 to 3 claims about how this night fits the previous nights. Empty if no recent nights are given.",
+                metric=metric, pattern={"type": "string", "enum": list(RECENT_PATTERNS)},
+            ),
+            "habit_tips": claims(
+                "0 to 3 habit tips, each tied to a measurement with status change.",
+                tip_id={"type": "string", "enum": sorted(HABIT_TIPS)}, metric=metric,
+            ),
         },
-    },
-    "required": ["this_night", "recent_nights", "habit_tips"],
-}
+        "required": list(FEEDBACK_KEYS),
+    }
+
 
 INSTRUCTIONS = f"""
-You explain one person's wearable sleep results in plain language.
-Use ONLY the JSON data you are given. It compares one night with the person's own
-baseline and, when present, lists their previous nights (oldest first).
+You choose what to tell one person about their wearable sleep results. You never
+write sentences: you reply with structured claims, and the dashboard writes the
+wording from them. Use ONLY the JSON data you are given. "this_night" compares
+one night with the person's own baseline; "recent_nights", when present, lists
+their previous nights (oldest first). Name measurements by their "ref".
 
-Write three parts:
-1. this_night: 1 to 4 short sentences on what stood out this night and which
-   changes happened on the same night. If nothing changed, say so briefly.
-2. recent_nights: 0 to 3 short sentences on how this night fits the previous
-   nights (for example a run of short nights, or a value back near its usual
-   level). Leave it empty when recent_nights is missing or empty in the data.
-3. habit_tips: 0 to 3 tip ids from this list that fit the pattern, each with a
-   short reason. Pick none if nothing stood out.
+Reply with:
+1. this_night: 1 to 4 measurements, most notable first, each with a direction:
+   "higher" or "lower" for status "change" (the sign of "difference"), "usual" for
+   status "normal", "not_enough_history" for status "insufficient_history", and
+   "missing" for status "missing".
+2. same_night: the refs of the measurements with status "change" if two or more
+   changed this night, otherwise an empty list.
+3. recent_nights: 0 to 3 claims, each a ref and one pattern:
+{json.dumps(RECENT_PATTERNS, indent=2)}
+   Leave it empty when recent_nights is missing from the data.
+4. habit_tips: 0 to 3 tip ids from this list, each tied to the ref of a
+   measurement with status "change". Pick none if nothing changed.
 {json.dumps(HABIT_TIPS, indent=2)}
 
-Rules:
-- Never diagnose, name a condition, or mention medicine, supplements or treatment.
-- Never say one measurement caused another; say they happened on the same night.
-- Never write digits or spelled-out amounts. To show a number, copy one of the
-  placeholders listed in the data, such as {{deep_sleep_min.observed}}; it is
-  filled in with the value and unit, and {{x.change}} already includes its
-  direction (for example "1 h 18 min shorter"). Put each placeholder right after
-  the name of its own measurement, e.g. "Deep sleep was {{deep_sleep_min.change}}
-  than usual." Do not calculate new numbers, percentages or averages.
-- Every sentence, and every habit tip reason, must be about at least one of the
-  measurements, named the way the data names it.
-- Never make claims about the person's health. Only describe the measurements.
-- Speak to the person as "you". Keep every sentence under 40 words.
+Every claim is checked against the data, and a reply with any wrong claim is
+thrown away, so only make claims the numbers support.
 """.strip()
 
 
@@ -220,11 +172,12 @@ Rules:
 
 @dataclass
 class AIFeedback:
-    """The model's reply after parsing."""
+    """The model's claims after parsing."""
 
-    this_night: list[str] = field(default_factory=list)
-    recent_nights: list[str] = field(default_factory=list)
-    habit_tips: list[tuple[str, str]] = field(default_factory=list)
+    this_night: list[tuple[str, str]] = field(default_factory=list)  # (ref, direction)
+    same_night: list[str] = field(default_factory=list)  # refs
+    recent_nights: list[tuple[str, str]] = field(default_factory=list)  # (ref, pattern)
+    habit_tips: list[tuple[str, str]] = field(default_factory=list)  # (tip_id, ref)
 
 
 class FeedbackError(ValueError):
@@ -265,11 +218,7 @@ def _fact_entry(fact: Fact) -> dict:
     if fact.status == "insufficient_history":
         entry["prior_nights"] = fact.baseline_nights
         entry["nights_needed"] = fact.minimum_nights
-    entry = {key: value for key, value in entry.items() if value is not None and value != ""}
-    entry["placeholders"] = [
-        f"{{{fact.metric}.{name}}}" for name, key in THIS_NIGHT_FIELDS.items() if key in entry
-    ]
-    return entry
+    return {key: value for key, value in entry.items() if value is not None and value != ""}
 
 
 def _recent_nights(facts: list[Fact], history: pd.DataFrame | None, night: str | None, max_nights: int) -> dict | None:
@@ -302,11 +251,10 @@ def _recent_nights(facts: list[Fact], history: pd.DataFrame | None, night: str |
             "previous_highest": max(present),
             "this_night": _round(fact.observed, fact.unit),
             "previous_nights_flagged": int(rows["status"].astype(str).eq("change").sum()),
-            "placeholders": [f"{{{fact.metric}.{name}}}" for name in RECENT_FIELDS],
         })
     if not metrics:
         return None
-    return {"nights_included": len(nights), "placeholders": ["{recent.nights}"], "metrics": metrics}
+    return {"nights_included": len(nights), "metrics": metrics}
 
 
 def build_feedback_payload(
@@ -332,161 +280,93 @@ def build_feedback_payload(
 # Checking the reply
 # ---------------------------------------------------------
 
-def _change_text(difference: float, unit: str) -> str:
-    """'1 h 18 min shorter', '10 bpm higher', '2 more' or 'unchanged'."""
-    if not difference:
-        return "unchanged"
-    up_word, down_word = DIRECTION_WORDS.get(unit, ("higher", "lower"))
-    amount = format_amount(abs(difference), unit).lstrip("+")
-    return f"{amount} {up_word if difference > 0 else down_word}"
+def expected_direction(entry: dict) -> str | None:
+    """The only direction the data supports for a this-night measurement."""
+    if entry.get("status") == "change":
+        difference = entry.get("difference")
+        if not difference:
+            return None
+        return "higher" if difference > 0 else "lower"
+    return EXPECTED_DIRECTION.get(entry.get("status"))
 
 
-def placeholder_values(payload: dict) -> dict[str, str]:
-    """What each placeholder the model may use shows, e.g. 'deep_sleep_min.observed' -> '1 h 32 min'."""
-    values = {}
-    for entry in payload.get("this_night", []):
-        ref, unit = entry["ref"], entry.get("unit", "")
-        for name, key in THIS_NIGHT_FIELDS.items():
-            if key not in entry:
-                continue
-            if name == "change":
-                values[f"{ref}.{name}"] = _change_text(entry[key], unit)
-            elif name in {"prior_nights", "nights_needed"}:
-                values[f"{ref}.{name}"] = str(int(entry[key]))
-            else:
-                values[f"{ref}.{name}"] = format_amount(entry[key], unit)
-    recent = payload.get("recent_nights")
-    if recent:
-        values["recent.nights"] = str(int(recent["nights_included"]))
-        for metric in recent["metrics"]:
-            ref, unit = metric["ref"], metric.get("unit", "")
-            for name, key in RECENT_FIELDS.items():
-                if metric.get(key) is None:
-                    continue
-                shown = str(int(metric[key])) if name == "recent_flagged" else format_amount(metric[key], unit)
-                values[f"{ref}.{name}"] = shown
-    return values
-
-
-def _metric_names(payload: dict) -> list[tuple[re.Pattern, str]]:
-    """(pattern, ref) for every name a measurement in the payload may go by, longest first."""
-    names: dict[str, str] = {}
-    for entry in payload.get("this_night", []):
-        for name in [entry["metric"], *METRIC_ALIASES.get(entry["ref"], [])]:
-            names.setdefault(name.lower(), entry["ref"])
-    ordered = sorted(names.items(), key=lambda item: len(item[0]), reverse=True)
-    return [(re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE), ref) for name, ref in ordered]
-
-
-def _name_spans(text: str, names: list[tuple[re.Pattern, str]]) -> list[tuple[int, int, str]]:
-    """Where each measurement is named in the text; longer names win over names inside them."""
-    spans: list[tuple[int, int, str]] = []
-    for pattern, ref in names:
-        for match in pattern.finditer(text):
-            if all(match.end() <= start or match.start() >= end for start, end, _ in spans):
-                spans.append((match.start(), match.end(), ref))
-    return sorted(spans)
-
-
-def _governing_name(spans, position: int):
-    """The measurement a placeholder belongs to: the last one named before it, else the first after."""
-    before = [span for span in spans if span[1] <= position]
-    if before:
-        return before[-1]
-    after = [span for span in spans if span[0] >= position]
-    return after[0] if after else None
-
-
-def _direction_words(segment: str) -> tuple[bool, bool]:
-    words = set(re.findall(r"[a-z]+", _PLACEHOLDER_RE.sub(" ", segment).lower()))
-    return bool(words & UP_WORDS), bool(words & DOWN_WORDS)
-
-
-def _check_text(text: str, values: dict[str, str], names, directions, is_reason: bool) -> list[str]:
-    problems = []
-    if len(text) > MAX_SENTENCE_CHARS:
-        problems.append("a sentence is too long")
-    banned = _BANNED_RE.search(text)
-    if banned:
-        problems.append(f"banned wording: {banned.group(0)!r}")
-
-    without_placeholders = _PLACEHOLDER_RE.sub(" ", text)
-    if _DIGIT_RE.search(without_placeholders):
-        problems.append("numbers must come from placeholders, not be written out")
-    if "{" in without_placeholders or "}" in without_placeholders:
-        problems.append("malformed placeholder")
-    spelled = _SPELLED_AMOUNT_RE.search(without_placeholders)
-    if spelled:
-        problems.append(f"amounts must come from placeholders: {spelled.group(0)!r}")
-
-    spans = _name_spans(text, names)
-    placeholders = list(_PLACEHOLDER_RE.finditer(text))
-    if not placeholders and not spans and (is_reason or not _MEASUREMENT_RE.search(text)):
-        problems.append("a sentence isn't about any of the measurements")
-
-    for match in placeholders:
-        ref, name = match.group(1), match.group(2)
-        if f"{ref}.{name}" not in values:
-            problems.append(f"unknown placeholder: {match.group(0)}")
-            continue
-        if ref == "recent":
-            continue
-        owner = _governing_name(spans, match.start())
-        if owner is None or owner[2] != ref:
-            problems.append(f"{match.group(0)} isn't next to the name of its own measurement")
-            continue
-        sign = directions.get(ref)
-        if sign and name in {"observed", "change"}:
-            # Words between the measurement's name and its number must not point the other way.
-            start, end = (owner[1], match.start()) if owner[1] <= match.start() else (match.end(), owner[0])
-            up, down = _direction_words(text[start:end])
-            if (sign > 0 and down) or (sign < 0 and up):
-                problems.append(f"direction words around {match.group(0)} contradict the data")
-    return problems
+def pattern_holds(metric: dict, pattern: str) -> bool:
+    """Whether a recent-nights pattern is true for the values that were sent."""
+    if pattern == "flagged_before":
+        return metric.get("previous_nights_flagged", 0) >= 1
+    now = metric.get("this_night")
+    previous = [value for value in metric.get("previous_values", []) if value is not None]
+    if now is None or not previous:
+        return False
+    average = metric.get("previous_average")
+    return {
+        "highest_of_recent": now > max(previous),
+        "lowest_of_recent": now < min(previous),
+        "within_recent_range": min(previous) <= now <= max(previous),
+        "above_recent_average": average is not None and now > average,
+        "below_recent_average": average is not None and now < average,
+    }.get(pattern, False)
 
 
 def validate_feedback(feedback: AIFeedback, payload: dict) -> list[str]:
-    """Reasons the reply can't be shown; an empty list means it's fine."""
+    """Claims that the data doesn't support; an empty list means the reply can be shown."""
     problems = []
-    if not any(sentence.strip() for sentence in feedback.this_night):
-        problems.append("no sentences about this night")
+    night = {entry["ref"]: entry for entry in payload.get("this_night", [])}
+
+    if not feedback.this_night:
+        problems.append("no claims about this night")
     if len(feedback.this_night) > MAX_THIS_NIGHT:
-        problems.append("too many sentences about this night")
-    if len(feedback.recent_nights) > MAX_RECENT_NIGHTS:
-        problems.append("too many sentences about recent nights")
-    if feedback.recent_nights and "recent_nights" not in payload:
+        problems.append("too many claims about this night")
+    mentioned = [ref for ref, _ in feedback.this_night]
+    if len(set(mentioned)) != len(mentioned):
+        problems.append("a measurement is mentioned twice")
+    for ref, direction in feedback.this_night:
+        entry = night.get(ref)
+        if entry is None:
+            problems.append(f"unknown measurement: {ref}")
+            continue
+        expected = expected_direction(entry)
+        if direction != expected:
+            problems.append(f"{ref} is {expected or 'not comparable'} this night, not {direction}")
+
+    if feedback.same_night:
+        if len(set(feedback.same_night)) < 2 or len(set(feedback.same_night)) != len(feedback.same_night):
+            problems.append("a same-night claim needs two or more different measurements")
+        for ref in feedback.same_night:
+            if night.get(ref, {}).get("status") != "change":
+                problems.append(f"{ref} didn't change this night")
+
+    recent = payload.get("recent_nights")
+    if feedback.recent_nights and not recent:
         problems.append("recent-night claims without recent-night data")
+    elif feedback.recent_nights:
+        if len(feedback.recent_nights) > MAX_RECENT_NIGHTS:
+            problems.append("too many claims about recent nights")
+        by_ref = {metric["ref"]: metric for metric in recent["metrics"]}
+        for ref, pattern in feedback.recent_nights:
+            if pattern not in RECENT_PATTERNS:
+                problems.append(f"unknown recent-nights pattern: {pattern}")
+            elif ref not in by_ref:
+                problems.append(f"no recent nights were sent for {ref}")
+            elif not pattern_holds(by_ref[ref], pattern):
+                problems.append(f"{pattern} isn't true for {ref}")
+
     if len(feedback.habit_tips) > MAX_HABIT_TIPS:
         problems.append("too many habit tips")
-    unknown = [tip for tip, _ in feedback.habit_tips if tip not in HABIT_TIPS]
-    if unknown:
-        problems.append(f"unknown habit tip ids: {', '.join(unknown)}")
-
-    values = placeholder_values(payload)
-    names = _metric_names(payload)
-    directions = {
-        entry["ref"]: (1 if entry["difference"] > 0 else -1)
-        for entry in payload.get("this_night", [])
-        if entry.get("status") == "change" and entry.get("difference")
-    }
-    for text in feedback.this_night + feedback.recent_nights:
-        problems += _check_text(text, values, names, directions, is_reason=False)
-    for _, reason in feedback.habit_tips:
-        if reason:
-            problems += _check_text(reason, values, names, directions, is_reason=True)
+    for tip_id, ref in feedback.habit_tips:
+        if tip_id not in HABIT_TIPS:
+            problems.append(f"unknown habit tip id: {tip_id}")
+        if night.get(ref, {}).get("status") != "change":
+            problems.append(f"habit tip {tip_id} is tied to {ref}, which didn't change this night")
     return list(dict.fromkeys(problems))
-
-
-def render(text: str, values: dict[str, str]) -> str:
-    """Fill the placeholders in with the values from the data."""
-    return _PLACEHOLDER_RE.sub(lambda match: values[f"{match.group(1)}.{match.group(2)}"], text)
 
 
 def parse_feedback(text: str) -> AIFeedback:
     """Turn the model's JSON text into AIFeedback, or raise FeedbackError.
 
-    The reply must match FEEDBACK_SCHEMA exactly: all three keys, nothing else,
-    lists of strings, and habit tips with exactly a tip_id and a reason.
+    The reply must match the schema exactly: all four keys and nothing else, and
+    claims with exactly the expected fields, all strings. Free text anywhere
+    (a sentence in place of a claim, or an extra field) is rejected.
     """
     try:
         data = json.loads(text)
@@ -494,39 +374,113 @@ def parse_feedback(text: str) -> AIFeedback:
         raise FeedbackError(f"reply is not JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise FeedbackError("reply is not a JSON object")
-    expected = set(FEEDBACK_SCHEMA["required"])
-    if set(data) != expected:
-        missing, extra = expected - set(data), set(data) - expected
+    if set(data) != set(FEEDBACK_KEYS):
+        missing, extra = set(FEEDBACK_KEYS) - set(data), set(data) - set(FEEDBACK_KEYS)
         raise FeedbackError(f"reply keys don't match the schema (missing {sorted(missing)}, extra {sorted(extra)})")
 
-    def strings(key: str) -> list[str]:
+    def claims(key: str, fields: tuple[str, str]) -> list[tuple[str, str]]:
         value = data[key]
-        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-            raise FeedbackError(f"{key} must be a list of strings")
-        return [item.strip() for item in value if item.strip()]
+        if not isinstance(value, list):
+            raise FeedbackError(f"{key} must be a list")
+        parsed = []
+        for item in value:
+            if not isinstance(item, dict) or set(item) != set(fields) or not all(isinstance(item[f], str) for f in fields):
+                raise FeedbackError(f"each {key} claim needs exactly {' and '.join(fields)}, as strings")
+            parsed.append((item[fields[0]], item[fields[1]]))
+        return parsed
 
-    tips = data["habit_tips"]
-    if not isinstance(tips, list):
-        raise FeedbackError("habit_tips must be a list")
-    parsed_tips = []
-    for tip in tips:
-        if (not isinstance(tip, dict) or set(tip) != {"tip_id", "reason"}
-                or not isinstance(tip["tip_id"], str) or not isinstance(tip["reason"], str)):
-            raise FeedbackError("each habit tip needs exactly a tip_id and a reason, both strings")
-        parsed_tips.append((tip["tip_id"], tip["reason"].strip()))
-    return AIFeedback(strings("this_night"), strings("recent_nights"), parsed_tips)
+    same_night = data["same_night"]
+    if not isinstance(same_night, list) or not all(isinstance(ref, str) for ref in same_night):
+        raise FeedbackError("same_night must be a list of measurement refs")
+    return AIFeedback(
+        this_night=claims("this_night", ("metric", "direction")),
+        same_night=list(same_night),
+        recent_nights=claims("recent_nights", ("metric", "pattern")),
+        habit_tips=claims("habit_tips", ("tip_id", "metric")),
+    )
+
+
+# ---------------------------------------------------------
+# Wording: every sentence comes from these templates
+# ---------------------------------------------------------
+
+SUPERLATIVE_UP = {"min": "longer", "count": "more"}
+SUPERLATIVE_DOWN = {"min": "shorter", "count": "fewer"}
+
+
+def _change_text(difference: float, unit: str) -> str:
+    """'1 h 18 min shorter', '10 bpm higher' or '2 more'."""
+    up_word, down_word = DIRECTION_WORDS.get(unit, ("higher", "lower"))
+    amount = format_amount(abs(difference), unit).lstrip("+")
+    return f"{amount} {up_word if difference > 0 else down_word}"
+
+
+def _mid_sentence(label: str) -> str:
+    """'Deep sleep' -> 'deep sleep', but 'REM sleep' stays as it is."""
+    return label if label[1:2].isupper() else label[:1].lower() + label[1:]
+
+
+def _verb(label: str) -> str:
+    return "were" if label.endswith("s") else "was"
+
+
+def _join(labels: list[str]) -> str:
+    return labels[0] if len(labels) == 1 else ", ".join(labels[:-1]) + f" and {labels[-1]}"
+
+
+def _this_night_sentence(entry: dict, direction: str, compared_with: str) -> str:
+    label, unit = entry["metric"], entry.get("unit", "")
+    verb = _verb(label)
+    observed = format_amount(entry["observed"], unit) if "observed" in entry else None
+    if direction in {"higher", "lower"}:
+        usual = format_amount(entry["baseline"], unit)
+        return f"{label} {verb} {_change_text(entry['difference'], unit)} than {compared_with} ({observed} vs {usual})."
+    if direction == "usual":
+        return f"{label} {verb} within your usual range ({observed})." if observed else f"{label} {verb} within your usual range."
+    if direction == "not_enough_history":
+        prior, needed = entry.get("prior_nights"), entry.get("nights_needed")
+        detail = f" ({prior} of {needed} earlier nights)" if prior is not None and needed is not None else ""
+        return f"{label}: not enough earlier nights to compare yet{detail}."
+    return f"{label} {verb} not recorded this night."
+
+
+def _recent_sentence(metric: dict, pattern: str) -> str:
+    label, unit = metric["metric"], metric.get("unit", "")
+    verb = _verb(label)
+    previous = [value for value in metric["previous_values"] if value is not None]
+    nights = f"your previous {len(previous)} night{'s' if len(previous) != 1 else ''}"
+    now = format_amount(metric["this_night"], unit) if metric.get("this_night") is not None else ""
+    low, high = format_amount(min(previous), unit), format_amount(max(previous), unit)
+    up_word, down_word = DIRECTION_WORDS.get(unit, ("higher", "lower"))
+    if pattern == "highest_of_recent":
+        return f"{label} ({now}) {verb} {SUPERLATIVE_UP.get(unit, 'higher')} than on any of {nights} ({low} to {high})."
+    if pattern == "lowest_of_recent":
+        return f"{label} ({now}) {verb} {SUPERLATIVE_DOWN.get(unit, 'lower')} than on any of {nights} ({low} to {high})."
+    if pattern == "within_recent_range":
+        return f"{label} ({now}) {verb} within the range of {nights} ({low} to {high})."
+    if pattern in {"above_recent_average", "below_recent_average"}:
+        word = up_word if pattern == "above_recent_average" else down_word
+        average = format_amount(metric["previous_average"], unit)
+        return f"{label} ({now}) {verb} {word} than your average over {nights} ({average})."
+    flagged = metric["previous_nights_flagged"]
+    return f"{label} {verb} also flagged on {flagged} of {nights}."
 
 
 def to_night_summary(feedback: AIFeedback, headline: str, payload: dict) -> NightSummary:
-    """Fit the AI feedback into the panel's headline-plus-bullets format, with the numbers filled in."""
-    values = placeholder_values(payload)
-    details = [render(sentence, values) for sentence in feedback.this_night]
-    details += [f"Recent nights: {render(sentence, values)}" for sentence in feedback.recent_nights]
-    for tip_id, reason in feedback.habit_tips:
-        tip = HABIT_TIPS[tip_id]
-        reason = render(reason, values)
-        reason = reason[:1].upper() + reason[1:]
-        details.append(f"Habit to try: {tip} {reason}" if reason else f"Habit to try: {tip}")
+    """Write the checked claims as the panel's headline plus bullets."""
+    night = {entry["ref"]: entry for entry in payload.get("this_night", [])}
+    compared_with = payload.get("compared_with", "your recent nights")
+    details = [_this_night_sentence(night[ref], direction, compared_with) for ref, direction in feedback.this_night]
+    if feedback.same_night:
+        labels = [night[ref]["metric"] for ref in feedback.same_night]
+        labels = [labels[0]] + [_mid_sentence(label) for label in labels[1:]]
+        details.append(f"{_join(labels)} changed on the same night; that doesn't mean one caused the other.")
+    if feedback.recent_nights:
+        by_ref = {metric["ref"]: metric for metric in payload["recent_nights"]["metrics"]}
+        details += [f"Recent nights: {_recent_sentence(by_ref[ref], pattern)}" for ref, pattern in feedback.recent_nights]
+    for tip_id, ref in feedback.habit_tips:
+        label = _mid_sentence(night[ref]["metric"])
+        details.append(f"Habit to try: {HABIT_TIPS[tip_id]} It fits the change in {label} this night.")
     if feedback.habit_tips:
         details.append(HABIT_TIP_NOTE)
     return NightSummary(headline=headline, details=details)
@@ -601,7 +555,7 @@ def generate_ai_feedback(
             "format": {
                 "type": "json_schema",
                 "name": "sleep_feedback",
-                "schema": FEEDBACK_SCHEMA,
+                "schema": feedback_schema([entry["ref"] for entry in payload["this_night"]]),
                 "strict": True,
             }
         },
